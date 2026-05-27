@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+AreaType = Literal["landsdekkende", "fylke", "kommune", "celle"]
+
+
+@dataclass(frozen=True)
+class DatasetRef:
+    metadata_uuid: str
+    title: str
+
+
+@dataclass(frozen=True)
+class FormatOption:
+    name: str
+    version: str | None = None
+
+    @property
+    def label(self) -> str:
+        name = " ".join(self.name.split())
+        version = " ".join(self.version.split()) if self.version else None
+        if version:
+            return f"{name} ({version})"
+        return name
+
+
+@dataclass(frozen=True)
+class ProjectionOption:
+    code: str
+    name: str | None = None
+    codespace: str | None = None
+
+    @property
+    def label(self) -> str:
+        if self.name:
+            return f"{self.code} — {self.name}"
+        return self.code
+
+
+@dataclass(frozen=True)
+class AreaOption:
+    type: AreaType
+    code: str
+    name: str
+    formats: list[FormatOption] = field(default_factory=list)
+    projections: list[ProjectionOption] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        return f"{self.code} — {self.name}"
+
+
+@dataclass(frozen=True)
+class DatasetCapabilities:
+    supports_area_selection: bool
+    supports_format_selection: bool
+    supports_projection_selection: bool
+    supports_polygon_selection: bool
+
+
+@dataclass
+class DatasetAvailability:
+    metadata_uuid: str
+    title: str
+    categories: list[str] = field(default_factory=list)
+    original_categories: list[str] = field(default_factory=list)
+    login_required: bool = False
+    enriched: bool = False
+    # ISO timestamp from Kartkatalog DateMetadataUpdated (used to skip unchanged records).
+    catalog_metadata_updated: str | None = None
+    enrichment_version: int = 0
+    download_api_base: str | None = None
+    capabilities: DatasetCapabilities | None = None
+    area_types: set[AreaType] = field(default_factory=set)
+    areas_by_type: dict[AreaType, list[AreaOption]] = field(default_factory=dict)
+    formats: list[FormatOption] = field(default_factory=list)
+    projections: list[ProjectionOption] = field(default_factory=list)
+

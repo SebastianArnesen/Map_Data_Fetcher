@@ -30,7 +30,6 @@ MANIFEST
 #   Usually these files are written by a python script from a template
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
-*.spec
 
 # Installer logs
 pip-log.txt
@@ -200,8 +199,31 @@ cython_debug/
 #   and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
+
+# Cursor
+.cursor/
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Local logs
+*.log
+
+# One-off binaries in repo root (PyInstaller output should live under dist/)
+*.exe
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+
+# Local crash dumps (latest.txt is updated for agent review; not committed)
+crash_reports/*.txt
 
 # Ruff stuff:
 .ruff_cache/
