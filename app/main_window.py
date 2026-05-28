@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -55,9 +56,11 @@ from geonorge.discovery import DiscoveryService
 from geonorge.models import AreaOption, AreaType, DatasetAvailability, DatasetRef, FormatOption, ProjectionOption
 from geonorge.nedlasting import NedlastingClient
 
+from app import __version__
 from app.dialogs import themed_message_box
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
+from app.updates import fetch_latest_release, is_newer_version
 from app.theme import (
     SHARED,
     apply_base_style,
@@ -548,7 +551,7 @@ class ThemeToggleSwitch(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, profile_ui: bool = False):
         super().__init__()
         self.setWindowTitle("Geonorge Datasets")
         self.resize(1200, 800)
@@ -606,6 +609,7 @@ class MainWindow(QMainWindow):
         self._recompute_timer.setSingleShot(True)
         self._recompute_timer.timeout.connect(self._recompute_lists)
         self._last_progress_message = ""
+        self._profile_ui = bool(profile_ui)
         self._dataset_page = 0
         self._dataset_page_size = 500
         self._dataset_total_rows = 0
@@ -649,8 +653,13 @@ class MainWindow(QMainWindow):
         self.reset_cache_button.setToolTip(
             "Delete the local dataset index and start over as if the app were never used."
         )
+        self.check_updates_button = QPushButton("Check updates")
+        self.check_updates_button.setObjectName("toolbarButton")
+        self.check_updates_button.setCursor(Qt.PointingHandCursor)
+        self.check_updates_button.setToolTip("Check GitHub for a newer version.")
         toolbar_layout.addWidget(self.refresh_button)
         toolbar_layout.addWidget(self.reset_cache_button)
+        toolbar_layout.addWidget(self.check_updates_button)
         toolbar_layout.addStretch(1)
         self.theme_toggle = ThemeToggleSwitch(self.top_toolbar)
         toolbar_layout.addWidget(self.theme_toggle)
@@ -1168,6 +1177,7 @@ class MainWindow(QMainWindow):
         self.format_view.clicked.connect(self._on_format_clicked)
         self.refresh_button.clicked.connect(self._refresh_all)
         self.reset_cache_button.clicked.connect(self._reset_cache)
+        self.check_updates_button.clicked.connect(self._check_for_updates)
         # Only leaf controls: clicking panel chrome must not trigger busy / disable the whole UI.
         self._filter_busy_widgets = [
             self.downloadable_filter,
@@ -1590,6 +1600,52 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(remove_worker)
         QApplication.instance().threadPool().start(worker)  # type: ignore[union-attr]
 
+    def _check_for_updates(self) -> None:
+        # Configure your GitHub repo owner/name here (or override with env vars later if you want).
+        owner = "sebas"  # TODO: change to your GitHub owner/org
+        repo = "Map_Data_Fetcher"  # TODO: change to your GitHub repo name
+        self._set_status("Checking for updates…")
+        self.check_updates_button.setEnabled(False)
+
+        def work():
+            return fetch_latest_release(owner=owner, repo=repo)
+
+        worker = FuncWorker(work)
+
+        def on_result(info) -> None:
+            self.check_updates_button.setEnabled(True)
+            latest = info.latest_version
+            if is_newer_version(__version__, latest):
+                self._set_status(f"Update available: v{latest}")
+                box = themed_message_box(
+                    self,
+                    "Update available",
+                    f"Current version: v{__version__}\nLatest version: v{latest}\n\nOpen the download page?",
+                    light_mode=self._light_mode,
+                    icon=QMessageBox.Information,
+                    buttons=QMessageBox.Yes | QMessageBox.No,
+                )
+                if box.exec() == QMessageBox.Yes:
+                    QDesktopServices.openUrl(QUrl(info.release_url))
+            else:
+                self._set_status(f"Up to date (v{__version__})")
+                themed_message_box(
+                    self,
+                    "No updates",
+                    f"You're on the latest version (v{__version__}).",
+                    light_mode=self._light_mode,
+                    icon=QMessageBox.Information,
+                    buttons=QMessageBox.Ok,
+                ).exec()
+
+        def on_error(err) -> None:
+            self.check_updates_button.setEnabled(True)
+            self._on_background_task_error(err)
+
+        worker.signals.result.connect(on_result)
+        worker.signals.error.connect(on_error)
+        self._start_worker(worker)
+
     def _rebuild_dataset_index(self) -> None:
         self._dataset_index_by_uuid = {d.metadata_uuid: i for i, d in enumerate(self._datasets)}
 
@@ -1764,12 +1820,15 @@ class MainWindow(QMainWindow):
             overlay.hide()
 
     def _recompute_lists(self) -> None:
+        t0 = time.perf_counter()
         self._recompute_running = True
         refresh = self._pending_refresh or _REFRESH_ALL
         self._pending_refresh = frozenset()
         scope = self._recompute_scope
         self._recompute_scope = "full"
         try:
+            if self._profile_ui:
+                logger.info("UI recompute start scope=%s refresh=%s", scope, ",".join(sorted(refresh)))
             self._validate_selections()
             if "categories" in refresh:
                 self._populate_categories()
@@ -1790,6 +1849,9 @@ class MainWindow(QMainWindow):
         finally:
             self._recompute_running = False
             self._end_filter_panel_busy()
+            if self._profile_ui:
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                logger.info("UI recompute end %.1fms scope=%s", dt_ms, scope)
 
     def _schedule_recompute_lists(
         self,

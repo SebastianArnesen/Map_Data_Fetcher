@@ -9,6 +9,11 @@ pip install -r requirements.txt
 python -m app.run
 ```
 
+### Debugging flags
+
+- `python -m app.run --no-tooltips`
+- `python -m app.run --profile-ui`
+
 ## Build Windows executable
 
 ```powershell
@@ -28,6 +33,21 @@ powershell -ExecutionPolicy Bypass -File .\build_debug_exe.ps1
 ```
 
 Output: `dist\GeonorgeDatasetsDebug.exe`
+
+## Release checklist (Windows)
+
+- Bump version: edit `app/__init__.py` (`__version__ = "x.y.z"`)
+- Build release exe: `powershell -ExecutionPolicy Bypass -File .\build_exe.ps1`
+- (Optional) Build debug exe: `powershell -ExecutionPolicy Bypass -File .\build_debug_exe.ps1`
+- Build installer: `powershell -ExecutionPolicy Bypass -File .\build_installer.ps1`
+- Smoke test:
+  - Open app, wait for datasets to load
+  - Try: Format=TIFF + Area type=Cell (no dataset) → ensure UI stays responsive
+  - Select a dataset + format + projection + area and start a small download
+- Verify disk paths:
+  - `%APPDATA%\GeonorgeDatasets\app.log`
+  - `%APPDATA%\GeonorgeDatasets\dataset_index.sqlite3`
+  - `%APPDATA%\GeonorgeDatasets\crash_reports\latest.txt` after a forced crash test (optional)
 
 ## Data on disk
 
