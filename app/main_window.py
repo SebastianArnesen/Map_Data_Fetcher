@@ -1602,8 +1602,8 @@ class MainWindow(QMainWindow):
 
     def _check_for_updates(self) -> None:
         # Configure your GitHub repo owner/name here (or override with env vars later if you want).
-        owner = "sebas"  # TODO: change to your GitHub owner/org
-        repo = "Map_Data_Fetcher"  # TODO: change to your GitHub repo name
+        owner = "SebastianArnesen"  # GitHub owner/org
+        repo = "Map_Data_Fetcher"  # GitHub repo name
         self._set_status("Checking for updates…")
         self.check_updates_button.setEnabled(False)
 
