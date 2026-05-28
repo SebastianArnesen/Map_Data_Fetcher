@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -60,7 +61,7 @@ from app import __version__
 from app.dialogs import themed_message_box
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
-from app.updates import fetch_latest_release, is_newer_version
+from app.updates import build_latest_release_web_url, fetch_latest_release, is_newer_version
 from app.theme import (
     SHARED,
     apply_base_style,
@@ -1604,11 +1605,12 @@ class MainWindow(QMainWindow):
         # Configure your GitHub repo owner/name here (or override with env vars later if you want).
         owner = "SebastianArnesen"  # GitHub owner/org
         repo = "Map_Data_Fetcher"  # GitHub repo name
+        token = os.environ.get("GEONORGE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
         self._set_status("Checking for updates…")
         self.check_updates_button.setEnabled(False)
 
         def work():
-            return fetch_latest_release(owner=owner, repo=repo)
+            return fetch_latest_release(owner=owner, repo=repo, token=token)
 
         worker = FuncWorker(work)
 
@@ -1640,7 +1642,43 @@ class MainWindow(QMainWindow):
 
         def on_error(err) -> None:
             self.check_updates_button.setEnabled(True)
-            self._on_background_task_error(err)
+            # FuncWorker emits a traceback string. For update checks, show a friendly message.
+            self._set_status("Update check failed")
+            details = str(err)
+            if "404 Client Error" in details and "api.github.com/repos/" in details:
+                extra = ""
+                if not token:
+                    extra = (
+                        "\n\nIf this repo is private, GitHub returns 404 unless you provide a token."
+                        "\nSet one of these environment variables and try again:"
+                        "\n- GEONORGE_GITHUB_TOKEN (recommended)"
+                        "\n- GITHUB_TOKEN"
+                    )
+                box = themed_message_box(
+                    self,
+                    "Couldn't check for updates",
+                    "GitHub returned 404 for the latest release endpoint."
+                    "\n\nPossible reasons:"
+                    "\n- The repo is private (unauthenticated requests return 404)"
+                    "\n- There is no published (non–pre-release) release"
+                    "\n- Owner/repo name is wrong"
+                    f"{extra}\n\nOpen the Releases page in your browser?",
+                    light_mode=self._light_mode,
+                    icon=QMessageBox.Warning,
+                    buttons=QMessageBox.Yes | QMessageBox.No,
+                )
+                if box.exec() == QMessageBox.Yes:
+                    QDesktopServices.openUrl(QUrl(build_latest_release_web_url(owner=owner, repo=repo)))
+                return
+
+            themed_message_box(
+                self,
+                "Couldn't check for updates",
+                "The update check failed.\n\nDetails:\n" + details,
+                light_mode=self._light_mode,
+                icon=QMessageBox.Warning,
+                buttons=QMessageBox.Ok,
+            ).exec()
 
         worker.signals.result.connect(on_result)
         worker.signals.error.connect(on_error)

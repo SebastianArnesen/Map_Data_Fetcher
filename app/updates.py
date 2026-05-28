@@ -32,9 +32,26 @@ def is_newer_version(current: str, latest: str) -> bool:
     return b > a
 
 
-def fetch_latest_release(*, owner: str, repo: str, timeout_s: float = 8.0) -> UpdateInfo:
-    url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-    resp = requests.get(url, timeout=timeout_s, headers={"Accept": "application/vnd.github+json"})
+def build_latest_release_api_url(*, owner: str, repo: str) -> str:
+    return f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+
+
+def build_latest_release_web_url(*, owner: str, repo: str) -> str:
+    return f"https://github.com/{owner}/{repo}/releases/latest"
+
+
+def fetch_latest_release(
+    *,
+    owner: str,
+    repo: str,
+    token: str | None = None,
+    timeout_s: float = 8.0,
+) -> UpdateInfo:
+    url = build_latest_release_api_url(owner=owner, repo=repo)
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    resp = requests.get(url, timeout=timeout_s, headers=headers)
     resp.raise_for_status()
     data = resp.json()
     tag = str(data.get("tag_name") or "").strip()
