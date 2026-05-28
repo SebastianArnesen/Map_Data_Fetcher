@@ -2,6 +2,10 @@
 
 Desktop app for browsing and downloading map datasets from [Geonorge](https://www.geonorge.no/).
 
+## License
+
+MIT (see `LICENSE`).
+
 ## Run from source
 
 ```bash
