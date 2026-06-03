@@ -2105,26 +2105,35 @@ class MainWindow(QMainWindow):
         proj_code = self._selected_projection.code if self._selected_projection else None
         source_epsg = infer_source_epsg(layer_id=layer_id, projection_code=proj_code)
 
-        # GeoJSON grids are small (<100 KB); load on the UI thread to avoid worker/canvas races.
         previous_status = self.status_text.text()
         self._set_status("Loading map grid…")
-        try:
+
+        def work() -> tuple[list, int, str]:
             text = fetch_text(url)
             parsed = parse_geojson_grid_cells(
                 text,
                 allowed_codes=allowed_codes,
                 source_epsg=source_epsg,
             )
-        except Exception as err:
+            return parsed, load_generation, layer_id
+
+        def on_result(payload: object) -> None:
+            if not isinstance(payload, tuple) or len(payload) != 3:
+                return
+            parsed, gen, lid = payload
+            self._set_status(previous_status)
+            if gen != self._area_map_load_generation:
+                return
+            self._apply_map_grid_result(parsed, load_generation=gen, layer_id=lid)
+
+        def on_error(err: str) -> None:
             self._on_background_task_error(str(err))
             self._close_area_map()
             self._set_status(previous_status)
-            return
 
-        self._set_status(previous_status)
-        if load_generation != self._area_map_load_generation:
-            return
-        self._apply_map_grid_result(parsed, load_generation=load_generation, layer_id=layer_id)
+        worker = FuncWorker(work)
+        connect_worker_signals(worker, result=on_result, error=on_error)
+        self._start_worker(worker)
 
     def _area_map_is_open(self) -> bool:
         return self.area_stack.currentWidget() is self.area_map_picker

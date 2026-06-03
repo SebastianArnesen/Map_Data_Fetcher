@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_TILE_URL = "https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png"
+_HTTP_HEADERS = {
+    "Accept": "application/json,image/png,*/*",
+    "User-Agent": "GeonorgeDatasets",
+}
+_MAX_TILE_INFLIGHT = 24
 
 
 def _tile_url_template() -> str:
@@ -71,21 +76,35 @@ def _tile_cache_path(z: int, x: int, y: int) -> Path:
     return _tile_cache_dir() / str(z) / str(x) / f"{y}.png"
 
 
-class _TileFetchSignals(QWidget):
+class _TileFetchSignals(QObject):
     tile_ready = Signal(int, int, int, int, QImage)  # epoch,z,x,y,img
+
+
+def _requests_verify() -> str | bool:
+    from app.ssl_bundle import ca_bundle_path
+
+    return ca_bundle_path()
 
 
 def _fetch_tile_image(z: int, x: int, y: int, url_template: str, timeout_s: float = 10.0) -> QImage | None:
     url = url_template.format(z=z, x=x, y=y)
     try:
-        resp = requests.get(url, timeout=timeout_s)
+        resp = requests.get(
+            url,
+            timeout=timeout_s,
+            headers={**_HTTP_HEADERS, "Accept": "image/png,*/*"},
+            verify=_requests_verify(),
+        )
         if resp.status_code != 200 or not resp.content:
+            logger.debug("Basemap tile HTTP %s for %s", resp.status_code, url)
             return None
         img = QImage.fromData(resp.content)
         if img.isNull():
+            logger.debug("Basemap tile decode failed for %s", url)
             return None
         return img
     except Exception:
+        logger.debug("Basemap tile fetch failed for %s", url, exc_info=True)
         return None
 
 
@@ -305,6 +324,7 @@ class MapCanvas(QWidget):
         self._hover_code: str | None = None
 
         self._tile_pix: dict[tuple[int, int, int], QPixmap] = {}
+        self._tile_pix_dark: dict[tuple[int, int, int], QPixmap] = {}
         self._tile_inflight: set[tuple[int, int, int]] = set()
         self._tile_epoch = 0
         self._tile_url_template = _tile_url_template()
@@ -312,7 +332,7 @@ class MapCanvas(QWidget):
         self._grid_cells: dict[str, GridCellShape] = {}
         self._selected_codes: set[str] = set()
 
-        self._signals = _TileFetchSignals()
+        self._signals = _TileFetchSignals(self)
         self._signals.tile_ready.connect(self._on_tile_ready, Qt.ConnectionType.QueuedConnection)
 
         self._repaint_timer = QTimer(self)
@@ -329,6 +349,7 @@ class MapCanvas(QWidget):
     def clear_basemap_tiles(self) -> None:
         self._tile_epoch += 1
         self._tile_pix.clear()
+        self._tile_pix_dark.clear()
         self._tile_inflight.clear()
 
     def set_grid_cells(self, cells: list[GridCellShape]) -> None:
@@ -340,10 +361,50 @@ class MapCanvas(QWidget):
         self.update()
 
     def set_dark_basemap(self, enabled: bool) -> None:
-        self._dark_basemap = bool(enabled)
+        enabled = bool(enabled)
+        if self._dark_basemap == enabled:
+            return
+        self._dark_basemap = enabled
         bg = QColor(28, 30, 34) if self._dark_basemap else QColor(245, 246, 248)
         self.setStyleSheet(f"QWidget#mapCanvas {{ background-color: {bg.name()}; }}")
+        self._rebuild_dark_tile_cache()
         self.update()
+
+    def _rebuild_dark_tile_cache(self) -> None:
+        self._tile_pix_dark.clear()
+        if not self._dark_basemap:
+            return
+        for key, pix in self._tile_pix.items():
+            if pix.isNull():
+                self._tile_pix_dark[key] = pix
+                continue
+            img = pix.toImage()
+            if img.isNull():
+                self._tile_pix_dark[key] = QPixmap()
+                continue
+            img = img.copy()
+            img.invertPixels(QImage.InvertMode.InvertRgb)
+            self._tile_pix_dark[key] = QPixmap.fromImage(img)
+
+    def _basemap_pixmap(self, key: tuple[int, int, int]) -> QPixmap | None:
+        if self._dark_basemap:
+            return self._tile_pix_dark.get(key) or self._tile_pix.get(key)
+        return self._tile_pix.get(key)
+
+    def _remember_tile(self, key: tuple[int, int, int], img: QImage) -> None:
+        if img.isNull():
+            # Remember failure so paint does not re-request the same tile forever.
+            self._tile_pix[key] = QPixmap()
+            self._tile_pix_dark[key] = QPixmap()
+            return
+        pix = QPixmap.fromImage(img)
+        self._tile_pix[key] = pix
+        if self._dark_basemap:
+            inv = img.copy()
+            inv.invertPixels(QImage.InvertMode.InvertRgb)
+            self._tile_pix_dark[key] = QPixmap.fromImage(inv)
+        else:
+            self._tile_pix_dark.pop(key, None)
 
     def _background_color(self) -> QColor:
         return QColor(28, 30, 34) if self._dark_basemap else QColor(245, 246, 248)
@@ -356,6 +417,8 @@ class MapCanvas(QWidget):
         key = (z, x, y)
         if key in self._tile_pix or key in self._tile_inflight:
             return
+        if len(self._tile_inflight) >= _MAX_TILE_INFLIGHT:
+            return
         self._tile_inflight.add(key)
         epoch = self._tile_epoch
 
@@ -364,7 +427,7 @@ class MapCanvas(QWidget):
             try:
                 img = QImage(str(cache_path))
                 if not img.isNull() and epoch == self._tile_epoch:
-                    self._tile_pix[key] = QPixmap.fromImage(img)
+                    self._remember_tile(key, img)
                     self._tile_inflight.discard(key)
                     self._schedule_repaint()
                     return
@@ -397,8 +460,7 @@ class MapCanvas(QWidget):
             return
         key = (z, x, y)
         self._tile_inflight.discard(key)
-        if not img.isNull():
-            self._tile_pix[key] = QPixmap.fromImage(img)
+        self._remember_tile(key, img)
         self._schedule_repaint()
 
     def _screen_to_lonlat(self, pt: QPoint) -> tuple[float, float]:
@@ -517,19 +579,11 @@ class MapCanvas(QWidget):
                 key = (self._zoom, x, y)
                 sx = int(tx * 256 - top_left[0])
                 sy = int(ty * 256 - top_left[1])
-                if pix := self._tile_pix.get(key):
+                if pix := self._basemap_pixmap(key):
                     if pix.isNull():
-                        self._fetch_tile(self._zoom, x, y)
                         continue
                     rect = QRect(sx, sy, 256, 256)
-                    if self._dark_basemap:
-                        img = pix.toImage()
-                        if not img.isNull():
-                            img = img.copy()
-                            img.invertPixels(QImage.InvertMode.InvertRgb)
-                            painter.drawImage(rect, img)
-                    else:
-                        painter.drawPixmap(rect, pix)
+                    painter.drawPixmap(rect, pix)
                 else:
                     self._fetch_tile(self._zoom, x, y)
 
@@ -638,7 +692,12 @@ class MapPickerWidget(QWidget):
 
 
 def fetch_text(url: str, *, timeout_s: float = 12.0) -> str:
-    resp = requests.get(url, timeout=timeout_s, headers={"Accept": "application/json"})
+    resp = requests.get(
+        url,
+        timeout=timeout_s,
+        headers=_HTTP_HEADERS,
+        verify=_requests_verify(),
+    )
     resp.raise_for_status()
     return resp.text
 
