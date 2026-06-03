@@ -12,6 +12,10 @@ pip install -r requirements-dev.txt
 ### Run
 
 ```bash
+# macOS/Linux: create and activate a venv first (see README)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 python -m app.run
 ```
 

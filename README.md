@@ -10,24 +10,33 @@ MIT (see `LICENSE`).
 
 ## Run from source
 
-Requires **Python 3.11+**.
+Requires **Python 3.11+**. On macOS and most Linux systems the command is **`python3`**, not `python` (unless you use a venv — then `python` works after activation).
 
 ```bash
-python -m venv .venv
-# Windows:  .\.venv\Scripts\activate
-# macOS/Linux:  source .venv/bin/activate
+# macOS / Linux — use python3 for the venv
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .\.venv\Scripts\activate
 pip install -r requirements.txt
 python -m app.run
 ```
 
-### macOS
+### macOS (first time on a new machine)
+
+Apple does not include `python` in Terminal. Install Python and PROJ, then use a venv:
 
 ```bash
-brew install python@3.11 proj
-python3.11 -m venv .venv && source .venv/bin/activate
+# If you don't have Homebrew: https://brew.sh
+brew install python@3.12 proj
+
+cd /path/to/Map_Data_Fetcher
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 python -m app.run
 ```
+
+If `python3` is too old (< 3.11), use the Homebrew binary explicitly, e.g. `$(brew --prefix python@3.12)/bin/python3 -m venv .venv`.
 
 ### Linux (Debian/Ubuntu example)
 
