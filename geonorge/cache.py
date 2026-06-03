@@ -17,10 +17,7 @@ from .models import (
 from .catalog import normalize_categories
 
 
-def default_cache_dir(app_name: str | None = None) -> Path:
-    if app_name is not None:
-        base = os.environ.get("APPDATA") or str(Path.home())
-        return Path(base) / app_name
+def default_cache_dir() -> Path:
     from app.paths import app_data_dir
 
     return app_data_dir()

@@ -10,10 +10,35 @@ MIT (see `LICENSE`).
 
 ## Run from source
 
+Requires **Python 3.11+**.
+
 ```bash
+python -m venv .venv
+# Windows:  .\.venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
 pip install -r requirements.txt
 python -m app.run
 ```
+
+### macOS
+
+```bash
+brew install python@3.11 proj
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m app.run
+```
+
+### Linux (Debian/Ubuntu example)
+
+```bash
+sudo apt install python3.11-venv libproj-dev
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m app.run
+```
+
+`pyproj` needs PROJ on Linux when pip does not provide a compatible wheel.
 
 ### Debugging flags
 
@@ -57,8 +82,22 @@ Output: `dist\GeonorgeDatasetsDebug.exe`
 
 ## Data on disk
 
-- Index and enriched metadata: `%APPDATA%\GeonorgeDatasets\dataset_index.sqlite3`
-- Logs and crash reports: `%APPDATA%\GeonorgeDatasets\` (see `crash_reports\latest.txt` after a crash)
+| OS | Folder |
+|----|--------|
+| Windows | `%APPDATA%\GeonorgeDatasets\` |
+| macOS | `~/Library/Application Support/GeonorgeDatasets/` |
+| Linux | `$XDG_DATA_HOME/GeonorgeDatasets/` or `~/.local/share/GeonorgeDatasets/` |
 
-On first run after the rename, the app migrates the old `%APPDATA%\GeonorgeDesktopDownloader` folder to `GeonorgeDatasets` when possible.
-- Optional one-time import from older installs: `cache.json` in the same folder (migrated automatically when the index is empty)
+Files in that folder:
+
+- `dataset_index.sqlite3` — index and enriched metadata
+- `app.log` — application log
+- `crash_reports\latest.txt` (or `crash_reports/latest.txt`) after a crash
+- `tile_cache\` — cached map basemap tiles
+
+On first run, the app migrates legacy data when possible:
+
+- Windows: `%APPDATA%\GeonorgeDesktopDownloader` → `GeonorgeDatasets`
+- macOS/Linux: old flat `~/GeonorgeDatasets` (or `~/GeonorgeDesktopDownloader`) → the OS-specific path above
+
+Optional one-time import from older installs: `cache.json` in the same folder (migrated automatically when the index is empty).
