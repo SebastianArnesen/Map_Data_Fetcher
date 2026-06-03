@@ -22,21 +22,25 @@ python -m app.run
 
 ### macOS (first time on a new machine)
 
-Apple does not include `python` in Terminal. Install Python and PROJ, then use a venv:
+Apple does not include `python` in Terminal, and the default `python3` is often **3.9**, which cannot install recent PySide6 wheels. Use **Homebrew Python 3.12** for the venv:
 
 ```bash
 # If you don't have Homebrew: https://brew.sh
 brew install python@3.12 proj
 
 cd /path/to/Map_Data_Fetcher
-python3 -m venv .venv
+# Important: use Homebrew's python3, not /usr/bin/python3
+"$(brew --prefix python@3.12)/bin/python3" -m venv .venv
 source .venv/bin/activate
+python --version    # should show 3.12.x
 pip install --upgrade pip
 pip install -r requirements.txt
 python -m app.run
 ```
 
-If `python3` is too old (< 3.11), use the Homebrew binary explicitly, e.g. `$(brew --prefix python@3.12)/bin/python3 -m venv .venv`.
+**If `pip install` fails on `PySide6>=6.11`:** either your clone is outdated (`git pull`) or you are on **macOS 12 (Monterey)** — Qt does not publish PySide6 6.10+ wheels for that OS, so pip installs **6.9.3** (fine for this app). Ensure `requirements.txt` says `PySide6>=6.8.0`, not `>=6.11.0`.
+
+Check before creating the venv: `python --version` in the venv must be **3.11+** (3.12 recommended).
 
 ### Linux (Debian/Ubuntu example)
 
