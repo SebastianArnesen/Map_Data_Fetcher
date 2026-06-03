@@ -59,6 +59,8 @@ class DatasetCapabilities:
     supports_format_selection: bool
     supports_projection_selection: bool
     supports_polygon_selection: bool
+    # Optional: enables "Velg fra kartblad" (cell selection via a coverage layer in Norgeskart).
+    map_selection_layer: str | None = None
 
 
 @dataclass

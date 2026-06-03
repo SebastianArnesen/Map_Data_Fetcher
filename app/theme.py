@@ -121,6 +121,7 @@ class ThemeColors:
     copy_status_fg: str
     secondary_label_fg: str
     selected_value_fg: str
+    selected_value_auto_fg: str
     filter_checkbox_fg: str
     search_clear_fg: str
 
@@ -193,6 +194,7 @@ DARK = ThemeColors(
     copy_status_fg="#9fb8ff",
     secondary_label_fg="#9ba3b4",
     selected_value_fg="#cfd3dc",
+    selected_value_auto_fg="#8b93a8",
     filter_checkbox_fg="#e6e6e6",
     search_clear_fg="#ffffff",
     checkbox_unchecked_bg="#e7ebf4",
@@ -259,6 +261,7 @@ LIGHT = ThemeColors(
     copy_status_fg=SHARED.border,
     secondary_label_fg=SHARED.border,
     selected_value_fg="#0f1115",
+    selected_value_auto_fg="#7d8597",
     filter_checkbox_fg="#0f1115",
     search_clear_fg=SHARED.border,
     checkbox_unchecked_bg="#ffffff",
@@ -455,12 +458,18 @@ def build_stylesheet(c: ThemeColors) -> str:
             border-radius: 5px;
         }}
         QRadioButton::indicator:checked {{
-            background: {s.accent};
+            background: qradialgradient(
+                cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                stop:0 {s.white}, stop:0.36 {s.white}, stop:0.37 {s.accent}, stop:1 {s.accent}
+            );
             border: 1px solid {s.accent};
             border-radius: 5px;
         }}
         QRadioButton::indicator:checked:hover {{
-            background: {s.accent};
+            background: qradialgradient(
+                cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                stop:0 {s.white}, stop:0.36 {s.white}, stop:0.37 {s.accent}, stop:1 {s.accent}
+            );
             border: 1px solid {s.accent};
             border-radius: 5px;
         }}
@@ -697,9 +706,52 @@ def build_stylesheet(c: ThemeColors) -> str:
         QLabel#selectedDatasetTitle {{
             color: {c.selected_value_fg};
             font-size: 10pt;
+            font-weight: 600;
+            padding: 0px;
+            margin: 0px;
+        }}
+        QLabel#selectedPanelGroupHeader {{
+            color: {c.selected_value_fg};
+            font-size: 10pt;
             font-weight: 700;
             padding: 0px;
             margin: 0px;
+        }}
+        QLabel#selectedDatasetValueAuto {{
+            color: {c.selected_value_auto_fg};
+            font-size: 10pt;
+            font-weight: 600;
+            padding: 0px;
+            margin: 0px;
+        }}
+        QRadioButton#areaTypeRadio {{
+            padding: 4px 10px 4px 8px;
+        }}
+        QRadioButton#areaTypeRadio[autoSelected="true"]::indicator {{
+            width: 12px;
+            height: 12px;
+            min-width: 12px;
+            max-width: 12px;
+            min-height: 12px;
+            max-height: 12px;
+            border: 1px solid {s.accent};
+            border-radius: 6px;
+            background: {s.white};
+        }}
+        QRadioButton#areaTypeRadio[autoSelected="true"]::indicator:hover {{
+            background: {s.white};
+            border: 1px solid {s.accent};
+            border-radius: 6px;
+        }}
+        QRadioButton#areaTypeRadio[autoSelected="true"]::indicator:checked {{
+            background: {s.accent};
+            border: 1px solid {s.accent};
+            border-radius: 6px;
+        }}
+        QRadioButton#areaTypeRadio[autoSelected="true"]::indicator:checked:hover {{
+            background: {s.accent};
+            border: 1px solid {s.accent};
+            border-radius: 6px;
         }}
         QPushButton#selectedPanelToggle {{
             background: transparent;
@@ -763,6 +815,22 @@ def checkbox_fill_border(
 
 def checkbox_tick_color() -> QColor:
     return qcolor(SHARED.checkbox_tick)
+
+
+def list_selection_border_color(*, light_mode: bool) -> QColor:
+    return qcolor(palette_for(light_mode).list_selected_bg)
+
+
+def checkbox_auto_fill_border(*, light_mode: bool, hover: bool) -> tuple[QColor, QColor]:
+    """Solid blue box (no tick), for auto-selected area checkboxes."""
+    del light_mode
+    del hover
+    accent = qcolor(SHARED.accent)
+    return accent, accent
+
+
+def checkbox_auto_tick_color() -> QColor:
+    return qcolor(SHARED.accent)
 
 
 def copy_icon_color(*, light_mode: bool, bright: bool) -> QColor:

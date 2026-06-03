@@ -38,6 +38,11 @@ def _caps_from_dict(d: dict[str, Any] | None) -> DatasetCapabilities | None:
         supports_format_selection=bool(d.get("supports_format_selection")),
         supports_projection_selection=bool(d.get("supports_projection_selection")),
         supports_polygon_selection=bool(d.get("supports_polygon_selection")),
+        map_selection_layer=(
+            str(d.get("map_selection_layer")).strip()
+            if isinstance(d.get("map_selection_layer"), str) and str(d.get("map_selection_layer")).strip()
+            else None
+        ),
     )
 
 

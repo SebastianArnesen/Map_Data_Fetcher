@@ -30,11 +30,15 @@ DATASET_COL_COPY = 1
 DATASET_COL_TAGS = 2
 DATASET_COL_LINK = 3
 
+from app.filter_index import format_filter_key
 from app.theme import (
     DARK,
     LIGHT,
+    checkbox_auto_fill_border,
+    checkbox_auto_tick_color,
     checkbox_fill_border,
     checkbox_tick_color,
+    list_selection_border_color,
     copy_hover_background,
     copy_icon_color,
     dataset_row_background,
@@ -226,7 +230,13 @@ class AreaSelectionModel(QStandardItemModel):
         self.setHorizontalHeaderLabels(["", "Code", "Name"])
         self.itemChanged.connect(self._on_item_changed)
 
-    def set_items(self, items: Iterable[CheckListItem], *, name_only: bool = False) -> None:
+    def set_items(
+        self,
+        items: Iterable[CheckListItem],
+        *,
+        name_only: bool = False,
+        notify: bool = True,
+    ) -> None:
         items = list(items)
         self._name_only = bool(name_only)
         self._suppress = True
@@ -259,7 +269,8 @@ class AreaSelectionModel(QStandardItemModel):
                     self.appendRow([check_item, code_item, name_item])
         finally:
             self._suppress = False
-        self.selection_changed.emit()
+        if notify:
+            self.selection_changed.emit()
 
     def uses_name_only_column(self) -> bool:
         return getattr(self, "_name_only", False)
@@ -352,23 +363,31 @@ class CheckBoxDelegate(QStyledItemDelegate):
         is_checked = state_value == int(Qt.Checked.value)
         is_partial = state_value == int(Qt.PartiallyChecked.value)
         is_hover = bool(option.state & QStyle.State_MouseOver)
+        key = index.data(Qt.UserRole + 1)
+        auto_codes = getattr(self._owner, "_auto_area_codes", set()) or set()
+        is_auto = isinstance(key, str) and key in auto_codes
 
         rect = QRectF(option.rect.x() + 5, option.rect.y() + (option.rect.height() - 13) / 2, 13, 13)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
         light_mode = resolve_light_mode(self._owner)
-        fill, border = checkbox_fill_border(
-            light_mode=light_mode,
-            checked=is_checked,
-            partial=is_partial,
-            hover=is_hover,
-        )
+        if is_auto:
+            fill, border = checkbox_auto_fill_border(light_mode=light_mode, hover=is_hover)
+            is_checked = True
+            is_partial = False
+        else:
+            fill, border = checkbox_fill_border(
+                light_mode=light_mode,
+                checked=is_checked,
+                partial=is_partial,
+                hover=is_hover,
+            )
         painter.setBrush(QBrush(fill))
         painter.setPen(QPen(border, 1.3))
         painter.drawRoundedRect(rect, 3, 3)
 
-        tick = checkbox_tick_color()
-        if is_checked:
+        tick = checkbox_auto_tick_color() if is_auto else checkbox_tick_color()
+        if is_checked and not is_auto:
             painter.setPen(QPen(tick, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.drawLine(rect.left() + 3.0, rect.center().y(), rect.left() + 5.5, rect.bottom() - 3.5)
             painter.drawLine(rect.left() + 5.5, rect.bottom() - 3.5, rect.right() - 2.5, rect.top() + 3.5)
@@ -565,6 +584,54 @@ def clear_dataset_index_widgets(view: QTreeView) -> None:
             if index.isValid() and view.indexWidget(index) is not None:
                 view.setIndexWidget(index, None)
     view._selectable_row_cap = 0  # type: ignore[attr-defined]
+
+
+class FilterListItemDelegate(QStyledItemDelegate):
+    """List rows with full fill for user selection or outline-only for auto-selection."""
+
+    def __init__(self, owner, *, kind: str) -> None:
+        view = getattr(owner, f"{kind}_view", owner)
+        super().__init__(view)
+        self._owner = owner
+        self._kind = kind
+
+    def _is_auto_row(self, index) -> bool:
+        model = index.model()
+        if model is None or not hasattr(model, "selected_payload"):
+            return False
+        payload = model.selected_payload(index)
+        if payload is None:
+            return False
+        if self._kind == "projection":
+            auto = getattr(self._owner, "_auto_projection", None)
+            return auto is not None and getattr(payload, "code", None) == auto.code
+        auto = getattr(self._owner, "_auto_format", None)
+        if auto is None:
+            return False
+        try:
+            return format_filter_key(payload) == format_filter_key(auto)
+        except (TypeError, AttributeError):
+            return payload is auto
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        is_auto = self._is_auto_row(index)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        if is_auto:
+            opt.state &= ~QStyle.State_Selected
+        super().paint(painter, opt, index)
+        if not is_auto:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        light_mode = resolve_light_mode(self._owner)
+        border = list_selection_border_color(light_mode=light_mode)
+        rect = QRectF(option.rect).adjusted(3, 3, -3, -3)
+        pen = QPen(border, 2.0)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 8, 8)
+        painter.restore()
 
 
 class CopyableListView(QListView):

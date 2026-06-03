@@ -36,7 +36,7 @@ class DiscoveryService:
 
     We keep startup fast by:
     - loading cached dataset availability if present
-    - fetching dataset refs quickly (prefer Nedlasting internal list if public)
+    - fetching dataset refs from the Kartkatalog sitemap (optional text search when provided)
     - progressively enriching datasets (capabilities -> areas -> projections/formats)
     """
 

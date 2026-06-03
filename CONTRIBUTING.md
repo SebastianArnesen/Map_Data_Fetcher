@@ -18,10 +18,20 @@ python -m app.run
 ### Tests + lint
 
 ```bash
-pytest -q
+pytest -q -m "not network"
 ruff check .
 python -m compileall app geonorge
 ```
+
+Live Geonorge/Kartverket fetches (optional, slower):
+
+```bash
+pytest -q -m network
+```
+
+### Scripts
+
+`scripts/` holds one-off dev probes (GeoJSON URL checks, etc.). They are not used by the app at runtime and may hit endpoints other than production defaults in `geonorge/map_selection.py`.
 
 ### Debugging flags
 

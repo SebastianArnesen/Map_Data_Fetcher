@@ -9,12 +9,26 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QRectF, Signal, QSize, Qt, QItemSelectionModel, QTimer, QUrl
+from PySide6.QtCore import (
+    QEvent,
+    QModelIndex,
+    QPoint,
+    QRectF,
+    QSettings,
+    Signal,
+    QSize,
+    Qt,
+    QItemSelectionModel,
+    QTimer,
+    QUrl,
+    Slot,
+)
 from PySide6.QtGui import (
     QBrush,
     QColor,
     QCursor,
     QDesktopServices,
+    QKeySequence,
     QPainter,
     QPainterPath,
     QPen,
@@ -44,6 +58,7 @@ from PySide6.QtWidgets import (
     QToolTip,
     QTreeView,
     QVBoxLayout,
+    QStackedWidget,
     QWidget,
 )
 
@@ -56,11 +71,13 @@ from geonorge.catalog import normalize_categories
 from geonorge.discovery import DiscoveryService
 from geonorge.models import AreaOption, AreaType, DatasetAvailability, DatasetRef, FormatOption, ProjectionOption
 from geonorge.nedlasting import NedlastingClient
+from geonorge.map_selection import geojson_url_for_map_selection_layer, infer_source_epsg
 
 from app import __version__
 from app.dialogs import themed_message_box
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
+from app.map_picker import MapPickerWidget, fetch_text, parse_geojson_grid_cells
 from app.updates import build_latest_release_web_url, fetch_latest_release, is_newer_version
 from app.theme import (
     SHARED,
@@ -87,6 +104,7 @@ from app.models_qt import (
     ClipboardCopyWidget,
     DatasetItemDelegate,
     ExternalLinkWidget,
+    FilterListItemDelegate,
     SimpleListModel,
     CopyableListView,
     CopyableTreeView,
@@ -97,7 +115,7 @@ from app.models_qt import (
     TwoColumnListModel,
 )
 from app.tooltip_delay import cancel_pending_tooltips
-from app.workers import FuncWorker
+from app.workers import FuncWorker, connect_worker_signals
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +125,8 @@ _SELECTED_GROUP_COLLAPSED_VISIBLE = 2
 
 # Avoid building a multi-thousand-row area table when browsing filters without a dataset.
 _AREA_TABLE_ROW_LIMIT = 600
+# Area search is only offered when the current type has at least this many options.
+_AREA_SEARCH_MIN_OPTIONS = 2
 
 # Panels that may be refreshed after filter/list changes (merged across debounced timer ticks).
 _REFRESH_ALL = frozenset(
@@ -245,7 +265,96 @@ class FilterCheckBox(QCheckBox):
         painter.drawText(self.rect().adjusted(20, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, self.text())
 
 
-class ElidedLabel(QLabel):
+class _SelectableTextMixin:
+    """
+    Mouse-driven text selection without a visible text caret.
+
+    Uses TextSelectableByMouse only (not TextSelectableByKeyboard) so Qt does not
+    draw the blinking insertion cursor; Shift+arrow extends the highlight instead.
+    """
+
+    _selection_anchor: int
+
+    def _init_selectable_text(self) -> None:
+        self._selection_anchor = 0
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setFocusPolicy(Qt.ClickFocus)
+        self.setCursor(Qt.IBeamCursor)
+
+    def _sync_selection_anchor_from_label(self) -> None:
+        start = self.selectionStart()
+        if start >= 0:
+            self._selection_anchor = start
+
+    @staticmethod
+    def _selection_length(label: QLabel) -> int:
+        if not label.hasSelectedText():
+            return 0
+        return len(label.selectedText())
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        super().mousePressEvent(event)
+        self._sync_selection_anchor_from_label()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        super().mouseReleaseEvent(event)
+        start = self.selectionStart()
+        if start >= 0 and self._selection_length(self) > 0:
+            self._selection_anchor = start
+
+    def _extend_selection_with_shift(self, key: Qt.Key) -> None:
+        text_len = len(self.text() or "")
+        start = self.selectionStart()
+        length = self._selection_length(self)
+        if start < 0:
+            start = 0
+            length = 0
+        anchor = self._selection_anchor
+        focus = start + length
+        if length > 0 and anchor == focus:
+            anchor = start
+        if key == Qt.Key.Key_Left:
+            focus = max(0, focus - 1)
+        elif key == Qt.Key.Key_Right:
+            focus = min(text_len, focus + 1)
+        elif key == Qt.Key.Key_Home:
+            focus = 0
+        elif key == Qt.Key.Key_End:
+            focus = text_len
+        else:
+            return
+        new_start = min(anchor, focus)
+        new_length = abs(focus - anchor)
+        self.setSelection(new_start, new_length)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.matches(QKeySequence.StandardKey.Copy):
+            selected = self.selectedText()
+            if selected:
+                QApplication.clipboard().setText(selected)
+                event.accept()
+                return
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and event.key() in (
+            Qt.Key.Key_Left,
+            Qt.Key.Key_Right,
+            Qt.Key.Key_Home,
+            Qt.Key.Key_End,
+        ):
+            self._extend_selection_with_shift(event.key())
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class SelectableLabel(_SelectableTextMixin, QLabel):
+    """Header/status text: selectable like a browser, no visible text caret."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._init_selectable_text()
+
+
+class ElidedLabel(_SelectableTextMixin, QLabel):
     """Single-line label that ellipsizes; never expands layouts with the full text width."""
 
     def __init__(self, text: str = ""):
@@ -254,6 +363,7 @@ class ElidedLabel(QLabel):
         self.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.setWordWrap(False)
+        self._init_selectable_text()
 
     def set_full_text(self, text: str) -> None:
         self._full_text = text
@@ -364,6 +474,14 @@ class DatasetSearchLineEdit(QLineEdit):
     def _sync_clear_visibility(self, text: str) -> None:
         self._clear_button.setVisible(bool(text))
         self._position_clear_button()
+
+    def clear(self) -> None:
+        super().clear()
+        self._sync_clear_visibility(self.text())
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt API)
+        super().setText(text)
+        self._sync_clear_visibility(text)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -577,6 +695,11 @@ class MainWindow(QMainWindow):
         self._selected_areas_expanded = False
         self._selected_projection: ProjectionOption | None = None
         self._selected_format: FormatOption | None = None
+        self._auto_projection: ProjectionOption | None = None
+        self._auto_format: FormatOption | None = None
+        self._auto_area_type: AreaType | None = None
+        self._auto_areas: list[AreaOption] = []
+        self._auto_area_codes: set[str] = set()
         self._show_only_downloadable = False
         self._dataset_search_text = ""
         self._area_search_text = ""
@@ -585,15 +708,20 @@ class MainWindow(QMainWindow):
         self._area_sort_column = "name"
         self._area_sort_ascending = True
         self._suppress_area_change = False
+        self._pending_area_change = False
         self._suppress_single_select_change = False
         self._hover_scroll_widgets: list[QWidget] = []
-        self._area_signature: tuple[tuple[str, str], ...] = ()
+        self._area_signature: object = ()
+        self._area_populate_context: tuple[str | None, AreaType | None] | None = None
         self._dataset_signature: tuple[tuple[str, str, str], ...] = ()
         self._projection_signature: tuple[str, ...] = ()
         self._format_signature: tuple[str, ...] = ()
         self._category_signature: tuple[str, ...] = ()
         self._area_types_signature: tuple[AreaType, ...] = ()
         self._area_all_previous_state = Qt.Unchecked
+        self._area_map_load_generation = 0
+        self._area_map_reload_pending = False
+        self._area_map_pending_apply: tuple[list, int, str] | None = None
         self._recompute_running = False
         self._filter_index: DatasetFilterIndex | None = None
         self._login_required_datasets: list[DatasetAvailability] = []
@@ -693,8 +821,8 @@ class MainWindow(QMainWindow):
         category_header_layout = QHBoxLayout(self.category_header)
         category_header_layout.setContentsMargins(0, 0, 0, 0)
         category_header_layout.setSpacing(6)
-        self.category_label = QLabel("Categories")
-        self.category_count_label = QLabel("(0)")
+        self.category_label = SelectableLabel("Categories")
+        self.category_count_label = SelectableLabel("(0)")
         self.category_count_label.setObjectName("secondaryHeaderLabel")
         category_header_layout.addWidget(self.category_label)
         category_header_layout.addWidget(self.category_count_label)
@@ -709,7 +837,7 @@ class MainWindow(QMainWindow):
         self.area_type_group = QButtonGroup(self)
         self.area_type_group.setExclusive(False)
         self.area_type_widget = QWidget()
-        self.area_type_widget.setFixedHeight(38)
+        self.area_type_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         area_type_layout = QHBoxLayout(self.area_type_widget)
         area_type_layout.setContentsMargins(0, 0, 0, 0)
         area_type_layout.setSpacing(6)
@@ -720,8 +848,10 @@ class MainWindow(QMainWindow):
             "celle": QRadioButton("Cell"),
         }
         for i, (key, button) in enumerate(self.area_type_buttons.items()):
+            button.setObjectName("areaTypeRadio")
             button.setAutoExclusive(False)
             button.setCursor(Qt.PointingHandCursor)
+            button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             self.area_type_group.addButton(button, i)
             area_type_layout.addWidget(button)
         area_type_layout.addStretch(1)
@@ -729,7 +859,7 @@ class MainWindow(QMainWindow):
         self.area_search_row = QWidget()
         area_search_layout = QHBoxLayout(self.area_search_row)
         area_search_layout.setContentsMargins(0, 0, 0, 0)
-        area_search_layout.setSpacing(0)
+        area_search_layout.setSpacing(8)
         self.area_search_combo = QWidget()
         self.area_search_combo.setObjectName("areaSearchCombo")
         area_search_combo_layout = QHBoxLayout(self.area_search_combo)
@@ -745,9 +875,45 @@ class MainWindow(QMainWindow):
         self.area_search_button = SearchMagnifyButton(object_name="areaSearchButton")
         self.area_search.set_search_button(self.area_search_button)
         self.area_search_combo.setFixedHeight(34)
+        self.area_search_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         area_search_combo_layout.addWidget(self.area_search, 1)
         area_search_combo_layout.addWidget(self.area_search_button, 0)
         area_search_layout.addWidget(self.area_search_combo, 1)
+        self.area_map_zoom_out = QPushButton("–")
+        self.area_map_zoom_out.setObjectName("toolbarButton")
+        self.area_map_zoom_out.setCursor(Qt.PointingHandCursor)
+        self.area_map_zoom_out.setFixedWidth(34)
+        self.area_map_zoom_out.setFixedHeight(34)
+        self.area_map_zoom_out.setVisible(False)
+        self.area_map_zoom_in = QPushButton("+")
+        self.area_map_zoom_in.setObjectName("toolbarButton")
+        self.area_map_zoom_in.setCursor(Qt.PointingHandCursor)
+        self.area_map_zoom_in.setFixedWidth(34)
+        self.area_map_zoom_in.setFixedHeight(34)
+        self.area_map_zoom_in.setVisible(False)
+        self.area_search_toolbar_spacer = QWidget()
+        self.area_search_toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.area_search_toolbar_spacer.setVisible(False)
+        area_search_layout.addWidget(self.area_map_zoom_out, 0)
+        area_search_layout.addWidget(self.area_map_zoom_in, 0)
+        area_search_layout.addWidget(self.area_search_toolbar_spacer, 1)
+        self.open_map_button = QPushButton("Open map")
+        self.open_map_button.setObjectName("toolbarButton")
+        self.open_map_button.setCursor(Qt.PointingHandCursor)
+        self.open_map_button.setFixedHeight(34)
+        self.open_map_button.setToolTip("Open a map view for selecting cells.")
+        self.open_map_button.setVisible(False)
+        self.close_map_button = QPushButton("Close map")
+        self.close_map_button.setObjectName("toolbarButton")
+        self.close_map_button.setCursor(Qt.PointingHandCursor)
+        self.close_map_button.setFixedHeight(34)
+        self.close_map_button.setToolTip("Close the map and return to the area list.")
+        self.close_map_button.setVisible(False)
+        map_btn_w = max(self.open_map_button.sizeHint().width(), self.close_map_button.sizeHint().width()) + 20
+        self.open_map_button.setFixedWidth(map_btn_w)
+        self.close_map_button.setFixedWidth(map_btn_w)
+        area_search_layout.addWidget(self.open_map_button, 0)
+        area_search_layout.addWidget(self.close_map_button, 0)
 
         self.areas_panel = QFrame()
         self.areas_panel.setObjectName("subCard")
@@ -759,8 +925,8 @@ class MainWindow(QMainWindow):
         area_heading_layout = QHBoxLayout(self.area_heading)
         area_heading_layout.setContentsMargins(0, 0, 0, 0)
         area_heading_layout.setSpacing(6)
-        self.area_label = QLabel("Areas")
-        self.area_count_label = QLabel("")
+        self.area_label = SelectableLabel("Areas")
+        self.area_count_label = SelectableLabel("")
         self.area_count_label.setObjectName("secondaryHeaderLabel")
         area_heading_layout.addWidget(self.area_label)
         area_heading_layout.addWidget(self.area_count_label)
@@ -807,16 +973,23 @@ class MainWindow(QMainWindow):
         area_list_layout = QVBoxLayout(self.area_list_section)
         area_list_layout.setContentsMargins(0, 0, 0, 0)
         area_list_layout.setSpacing(8)
-        area_list_layout.addWidget(self.area_search_row)
         area_list_layout.addWidget(self.area_header)
         area_list_layout.addWidget(self.area_view, 1)
+
+        self.area_map_picker = MapPickerWidget()
+        self.area_map_picker.setVisible(False)
+
+        self.area_stack = QStackedWidget()
+        self.area_stack.addWidget(self.area_list_section)
+        self.area_stack.addWidget(self.area_map_picker)
 
         self.area_panel_fill = QWidget()
         self.area_panel_fill.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         areas_layout.addWidget(self.area_heading)
         areas_layout.addWidget(self.area_type_widget)
-        areas_layout.addWidget(self.area_list_section, 1)
+        areas_layout.addWidget(self.area_search_row)
+        areas_layout.addWidget(self.area_stack, 1)
         areas_layout.addWidget(self.area_panel_fill, 1)
 
         left_layout.addWidget(self.areas_panel, 3)
@@ -838,10 +1011,10 @@ class MainWindow(QMainWindow):
         dataset_header_layout = QHBoxLayout(self.dataset_header)
         dataset_header_layout.setContentsMargins(0, 0, 0, 0)
         dataset_header_layout.setSpacing(6)
-        self.dataset_label = QLabel("Datasets")
-        self.dataset_count_label = QLabel("(0)")
+        self.dataset_label = SelectableLabel("Datasets")
+        self.dataset_count_label = SelectableLabel("(0)")
         self.dataset_count_label.setObjectName("secondaryHeaderLabel")
-        self.dataset_page_label = QLabel("")
+        self.dataset_page_label = SelectableLabel("")
         self.dataset_page_label.setObjectName("secondaryHeaderLabel")
         self.dataset_prev_button = PagerButton("prev")
         self.dataset_next_button = PagerButton("next")
@@ -916,8 +1089,8 @@ class MainWindow(QMainWindow):
         projection_header_layout = QHBoxLayout(self.projection_header)
         projection_header_layout.setContentsMargins(0, 0, 0, 0)
         projection_header_layout.setSpacing(6)
-        self.projection_label = QLabel("Projection")
-        self.projection_count_label = QLabel("(0)")
+        self.projection_label = SelectableLabel("Projection")
+        self.projection_count_label = SelectableLabel("(0)")
         self.projection_count_label.setObjectName("secondaryHeaderLabel")
         projection_header_layout.addWidget(self.projection_label)
         projection_header_layout.addWidget(self.projection_count_label)
@@ -945,8 +1118,8 @@ class MainWindow(QMainWindow):
         format_header_layout = QHBoxLayout(self.format_header)
         format_header_layout.setContentsMargins(0, 0, 0, 0)
         format_header_layout.setSpacing(6)
-        self.format_label = QLabel("Format")
-        self.format_count_label = QLabel("(0)")
+        self.format_label = SelectableLabel("Format")
+        self.format_count_label = SelectableLabel("(0)")
         self.format_count_label.setObjectName("secondaryHeaderLabel")
         format_header_layout.addWidget(self.format_label)
         format_header_layout.addWidget(self.format_count_label)
@@ -976,7 +1149,7 @@ class MainWindow(QMainWindow):
         selected_header_layout = QHBoxLayout(selected_header)
         selected_header_layout.setContentsMargins(0, 0, 0, 0)
         selected_header_layout.setSpacing(6)
-        self.selected_label = QLabel("Selected")
+        self.selected_label = SelectableLabel("Selected")
         self.clear_all_selections_button = QPushButton("X")
         self.clear_all_selections_button.setObjectName("selectedPanelClearAllButton")
         self.clear_all_selections_button.setToolTip("Clear all selections")
@@ -1000,9 +1173,15 @@ class MainWindow(QMainWindow):
         self.selected_scroll.setObjectName("selectedScroll")
         self.selected_scroll.setWidgetResizable(True)
         self.selected_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.selected_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.selected_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.selected_scroll.setFrameShape(QFrame.NoFrame)
         self.selected_scroll.setAttribute(Qt.WA_StyledBackground, True)
+        self.selected_scroll.setMouseTracking(True)
+        self.selected_scroll.viewport().setMouseTracking(True)
+        self.selected_scroll.installEventFilter(self)
+        self._hover_scroll_widgets.append(self.selected_scroll)
+        self.selected_scroll.viewport().installEventFilter(self)
+        self._hover_scroll_widgets.append(self.selected_scroll.viewport())
         self.selected_scroll.viewport().setObjectName("selectedScrollViewport")
         self.selected_scroll.viewport().setAttribute(Qt.WA_StyledBackground, True)
         self.selected_scroll.setWidget(self.selected_rows_host)
@@ -1061,10 +1240,10 @@ class MainWindow(QMainWindow):
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.status_text = QLabel("Loading…")
+        self.status_text = SelectableLabel("Loading…")
         self.status_text.setObjectName("statusLabel")
         self.status.addWidget(self.status_text, 1)
-        self.copy_status_text = QLabel("")
+        self.copy_status_text = SelectableLabel("")
         self.copy_status_text.setObjectName("copyStatusLabel")
         self.status.addPermanentWidget(self.copy_status_text)
 
@@ -1084,9 +1263,11 @@ class MainWindow(QMainWindow):
 
         self.projection_model = SimpleListModel()
         self.projection_view.setModel(self.projection_model)
+        self.projection_view.setItemDelegate(FilterListItemDelegate(self, kind="projection"))
 
         self.format_model = SimpleListModel()
         self.format_view.setModel(self.format_model)
+        self.format_view.setItemDelegate(FilterListItemDelegate(self, kind="format"))
 
         for view in (
             self.area_view,
@@ -1122,11 +1303,14 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         apply_base_style()
-        self._on_theme_toggle(False)
+        settings = QSettings("Geonorge", "Datasets")
+        light = settings.value("ui/light_mode", False, type=bool)
+        self._on_theme_toggle(light)
 
     def _on_theme_toggle(self, light_mode: bool) -> None:
         self._light_mode = bool(light_mode)
         self.setStyleSheet(build_stylesheet(palette_for(self._light_mode)))
+        QSettings("Geonorge", "Datasets").setValue("ui/light_mode", self._light_mode)
         if hasattr(self, "theme_toggle"):
             self.theme_toggle.set_light_mode(self._light_mode)
             border, track, icon = theme_toggle_colors(light_mode=self._light_mode)
@@ -1147,6 +1331,8 @@ class MainWindow(QMainWindow):
             clear_list_index_widgets(self.projection_view)
         if hasattr(self, "format_view"):
             clear_list_index_widgets(self.format_view)
+        if hasattr(self, "area_map_picker"):
+            self.area_map_picker.canvas.set_dark_basemap(not self._light_mode)
         if hasattr(self, "area_view"):
             clear_tree_index_widgets(
                 self.area_view,
@@ -1170,6 +1356,11 @@ class MainWindow(QMainWindow):
         self.area_search.returnPressed.connect(self._apply_area_search)
         self.area_search.textChanged.connect(self._on_area_search_text_changed)
         self.area_search_button.clicked.connect(self._apply_area_search)
+        self.open_map_button.clicked.connect(self._open_area_map)
+        self.close_map_button.clicked.connect(self._close_area_map)
+        self.area_map_zoom_in.clicked.connect(self._on_area_map_zoom_in)
+        self.area_map_zoom_out.clicked.connect(self._on_area_map_zoom_out)
+        self.area_map_picker.toggled.connect(self._on_area_map_toggled)
         self.dataset_view.clicked.connect(self._on_dataset_clicked)
         self.dataset_view.selectionModel().currentChanged.connect(self._on_dataset_current_changed)
         self.dataset_prev_button.clicked.connect(self._on_dataset_prev_page)
@@ -1264,6 +1455,23 @@ class MainWindow(QMainWindow):
             QEvent.Type.KeyRelease,
         ):
             return True
+
+        if isinstance(obj, QLabel) and event.type() == QEvent.Type.KeyPress:
+            flags = obj.textInteractionFlags()
+            if flags & Qt.TextInteractionFlag.TextSelectableByMouse:
+                if event.matches(QKeySequence.StandardKey.Copy):
+                    selected = obj.selectedText()
+                    if selected:
+                        QApplication.clipboard().setText(selected)
+                        return True
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and event.key() in (
+                    Qt.Key.Key_Left,
+                    Qt.Key.Key_Right,
+                    Qt.Key.Key_Home,
+                    Qt.Key.Key_End,
+                ) and hasattr(obj, "_extend_selection_with_shift"):
+                    obj._extend_selection_with_shift(event.key())  # type: ignore[attr-defined]
+                    return True
 
         selected_copy = getattr(self, "selected_dataset_copy_widget", None)
         if event.type() == QEvent.MouseButtonPress:
@@ -1474,12 +1682,13 @@ class MainWindow(QMainWindow):
         self.dataset_view.setColumnWidth(DATASET_COL_TAGS, tags_w)
 
     def _make_labels_selectable(self, root: QWidget) -> None:
-        flags = Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
         for label in root.findChildren(QLabel):
-            label.setTextInteractionFlags(flags)
-            # Needed for Ctrl+C on selected QLabel text.
+            if isinstance(label, (ElidedLabel, SelectableLabel)):
+                continue
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             label.setFocusPolicy(Qt.ClickFocus)
-            label.setCursor(Qt.ArrowCursor)
+            label.setCursor(Qt.IBeamCursor)
+            label.installEventFilter(self)
 
     def _apply_clickable_cursors(self, root: QWidget | None = None) -> None:
         root = root or self
@@ -1492,6 +1701,70 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _area_type_shows_area_list(area_type: AreaType | None) -> bool:
         return area_type is not None and area_type != "landsdekkende"
+
+    def _area_populate_context_key(self, area_type: AreaType | None) -> tuple[str | None, AreaType | None]:
+        ds_uuid = self._selected_dataset.metadata_uuid if self._selected_dataset else None
+        return (ds_uuid, area_type)
+
+    def _area_search_input_active(self) -> bool:
+        area_type = self._active_area_type()
+        if self._area_map_is_open() or not self._area_type_shows_area_list(area_type):
+            return False
+        return len(self._candidate_areas(area_type)) >= _AREA_SEARCH_MIN_OPTIONS
+
+    def _reconcile_area_search_with_candidates(self, all_areas: list[AreaOption]) -> None:
+        if len(all_areas) < _AREA_SEARCH_MIN_OPTIONS:
+            self._clear_area_search_filter()
+            return
+        committed = self._area_search_text
+        if committed and self.area_search.text().strip() != committed:
+            self.area_search.blockSignals(True)
+            try:
+                self.area_search.setText(committed)
+            finally:
+                self.area_search.blockSignals(False)
+
+    def _area_list_content_signature(
+        self,
+        area_type: AreaType,
+        display_areas: list[AreaOption],
+        *,
+        truncated: bool,
+        filtered_total: int,
+    ) -> tuple:
+        ds_key = self._selected_dataset.metadata_uuid if self._selected_dataset else ""
+        if truncated:
+            return ("truncated", ds_key, area_type, filtered_total, self._area_search_text)
+        return ("full", ds_key, area_type, tuple((a.code, a.name) for a in display_areas))
+
+    def _set_area_search_text(self, text: str) -> None:
+        normalized = text.strip()
+        if normalized == self._area_search_text:
+            return
+        self._area_search_text = normalized
+        self._update_selected_panel()
+        if not self._recompute_running and self._area_search_input_active():
+            self._populate_areas_for_type(self._active_area_type(), preserve_selection=True)
+
+    def _clear_area_search_filter(self, *, block_field_signals: bool = False) -> None:
+        if not self._area_search_text and not self.area_search.text():
+            return
+        self._area_search_text = ""
+        if block_field_signals:
+            self.area_search.blockSignals(True)
+        try:
+            self.area_search.clear()
+        finally:
+            if block_field_signals:
+                self.area_search.blockSignals(False)
+        self._update_selected_panel()
+        if not self._recompute_running and self._area_search_input_active():
+            self._populate_areas_for_type(self._active_area_type(), preserve_selection=True)
+
+    def _discard_area_search_if_hidden(self) -> None:
+        if self._area_search_input_active():
+            return
+        self._clear_area_search_filter()
 
     def _entire_country_selection(
         self,
@@ -1511,8 +1784,20 @@ class MainWindow(QMainWindow):
         preferred = next((a for a in areas if a.code == "0000"), None)
         return [preferred] if preferred else [areas[0]]
 
+    def _update_area_search_row_visibility(self) -> None:
+        map_open = self._area_map_is_open()
+        show_list_types = self._area_type_shows_area_list(self._active_area_type())
+        show_area_search = self._area_search_input_active()
+        self.area_search_row.setVisible(map_open or show_list_types)
+        self.area_search_combo.setVisible(show_area_search)
+        self.area_map_zoom_out.setVisible(map_open)
+        self.area_map_zoom_in.setVisible(map_open)
+        self.area_search_toolbar_spacer.setVisible(map_open)
+        self._discard_area_search_if_hidden()
+
     def _update_area_details_visibility(self) -> None:
-        show_list = self._area_type_shows_area_list(self._selected_area_type)
+        show_list = self._area_type_shows_area_list(self._active_area_type())
+        self._update_area_search_row_visibility()
         self.area_list_section.setVisible(show_list)
         self.area_panel_fill.setVisible(not show_list)
         layout = self.areas_panel.layout()
@@ -1524,16 +1809,11 @@ class MainWindow(QMainWindow):
             if fill_idx >= 0:
                 layout.setStretch(fill_idx, 0 if show_list else 1)
         if show_list:
-            self.area_all_checkbox.setVisible(True)
             self.area_code_header.setVisible(not self._area_display_name_only)
         else:
-            self.area_all_checkbox.setVisible(False)
             self.area_code_header.setVisible(False)
-            if self._selected_area_type is None:
-                self._area_search_text = ""
-                self.area_search.blockSignals(True)
-                self.area_search.clear()
-                self.area_search.blockSignals(False)
+        self._sync_area_master_checkbox_visibility()
+        self._discard_area_search_if_hidden()
 
     def _update_area_header_visibility(self) -> None:
         self._update_area_details_visibility()
@@ -1591,6 +1871,101 @@ class MainWindow(QMainWindow):
             ignore=ignore,
         )
 
+    def _active_area_type(self) -> AreaType | None:
+        return self._selected_area_type or self._auto_area_type
+
+    def _effective_projection(self) -> ProjectionOption | None:
+        return self._selected_projection or self._auto_projection
+
+    def _effective_format(self) -> FormatOption | None:
+        return self._selected_format or self._auto_format
+
+    def _effective_areas(self) -> list[AreaOption]:
+        if self._selected_areas:
+            return list(self._selected_areas)
+        return list(self._auto_areas)
+
+    def _clear_all_auto_selections(self) -> None:
+        self._auto_projection = None
+        self._auto_format = None
+        self._auto_area_type = None
+        self._auto_areas = []
+        self._auto_area_codes = set()
+
+    def _clear_user_area_selection(self) -> None:
+        self._selected_area_type = None
+        self._selected_areas = []
+
+    def _clear_auto_area_selection(self) -> None:
+        self._auto_area_type = None
+        self._auto_areas = []
+        self._auto_area_codes = set()
+
+    def _promote_auto_area_type_if_user_selected_areas(self) -> bool:
+        """When areas are chosen while the type was auto-only, show a normal radio check."""
+        if not self._selected_areas or self._selected_area_type is not None or self._auto_area_type is None:
+            return False
+        self._selected_area_type = self._auto_area_type
+        self._auto_area_type = None
+        self._auto_areas = []
+        self._auto_area_codes = set()
+        self._apply_area_type_button_visuals()
+        return True
+
+    def _restore_auto_single_area(self) -> bool:
+        area_type = self._active_area_type()
+        if area_type is None or not self._area_type_shows_area_list(area_type):
+            return False
+        if self._selected_areas:
+            return False
+        all_areas = self._sort_areas(self._candidate_areas(area_type))
+        areas = self._filter_areas_by_search(all_areas)
+        if len(areas) != 1:
+            self._auto_areas = []
+            self._auto_area_codes = set()
+            return False
+        single = areas[0]
+        self._auto_areas = [single]
+        self._auto_area_codes = {single.code}
+        self._suppress_area_change = True
+        try:
+            self.area_model.set_checked_keys(set())
+        finally:
+            self._suppress_area_change = False
+        self.area_view.viewport().update()
+        return True
+
+    def _apply_area_type_button_visuals(self) -> None:
+        for area_type, button in self.area_type_buttons.items():
+            if not button.isVisible():
+                button.setProperty("autoSelected", False)
+                continue
+            is_user = self._selected_area_type == area_type
+            is_auto = (
+                self._selected_area_type is None
+                and self._auto_area_type == area_type
+            )
+            button.setProperty("autoSelected", is_auto)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.blockSignals(True)
+            try:
+                button.setChecked(is_user or is_auto)
+            finally:
+                button.blockSignals(False)
+        self._sync_area_type_row_height()
+
+    def _sync_area_type_row_height(self) -> None:
+        visible = [button for button in self.area_type_buttons.values() if button.isVisible()]
+        if not visible:
+            self.area_type_widget.setFixedHeight(0)
+            return
+        self.area_type_widget.setMinimumHeight(0)
+        self.area_type_widget.setMaximumHeight(16777215)
+        self.area_type_widget.adjustSize()
+        height = max(40, self.area_type_widget.sizeHint().height())
+        self.area_type_widget.setFixedHeight(height)
+
     def _start_worker(self, worker: FuncWorker) -> None:
         self._active_workers.append(worker)
 
@@ -1598,8 +1973,226 @@ class MainWindow(QMainWindow):
             if worker in self._active_workers:
                 self._active_workers.remove(worker)
 
-        worker.signals.finished.connect(remove_worker)
+        worker.signals.finished.connect(remove_worker, Qt.ConnectionType.QueuedConnection)
         QApplication.instance().threadPool().start(worker)  # type: ignore[union-attr]
+
+    def _update_open_map_visibility(self) -> None:
+        self._update_area_search_row_visibility()
+        ds = self._selected_dataset
+        show = False
+        if ds and self._active_area_type() == "celle" and ds.capabilities and ds.capabilities.map_selection_layer:
+            show = True
+        map_open = self._area_map_is_open()
+        self.open_map_button.setVisible(show and not map_open)
+        self.open_map_button.setEnabled(show and not map_open)
+        self.close_map_button.setVisible(show and map_open)
+        self.close_map_button.setEnabled(show and map_open)
+        if show and ds and ds.capabilities and ds.capabilities.map_selection_layer:
+            tip = f"Layer: {ds.capabilities.map_selection_layer}"
+            self.open_map_button.setToolTip(f"Open a map view for selecting cells.\n\n{tip}")
+            self.close_map_button.setToolTip(f"Close the map and return to the area list.\n\n{tip}")
+
+    def _area_map_supported(self) -> bool:
+        ds = self._selected_dataset
+        return bool(
+            ds
+            and self._active_area_type() == "celle"
+            and ds.capabilities
+            and ds.capabilities.map_selection_layer
+        )
+
+    def _refresh_area_map_for_dataset_change(self) -> None:
+        if not self._area_map_supported():
+            self._close_area_map()
+            return
+        # Reload in place after filter lists settle (see _recompute_lists).
+        self._area_map_reload_pending = self._area_map_is_open()
+
+    def _flush_pending_area_map_reload(self) -> None:
+        if not self._area_map_reload_pending:
+            return
+        if self._recompute_running or self._recompute_timer.isActive():
+            return
+        if not self._area_map_supported():
+            self._area_map_reload_pending = False
+            return
+        self._area_map_reload_pending = False
+        self._open_area_map()
+
+    def _apply_map_grid_result(
+        self,
+        parsed: object,
+        *,
+        load_generation: int,
+        layer_id: str,
+    ) -> None:
+        if load_generation != self._area_map_load_generation:
+            return
+        if not self._area_map_is_open():
+            return
+        ds = self._selected_dataset
+        if not ds or not ds.capabilities or ds.capabilities.map_selection_layer != layer_id:
+            return
+        if not isinstance(parsed, list):
+            return
+        try:
+            self.area_map_picker.apply_parsed_grid(parsed)
+        except Exception:
+            logger.exception("Failed to apply map grid for layer %s", layer_id)
+            return
+        if not self.area_map_picker.canvas._grid_cells:
+            logger.warning(
+                "Map grid for layer %s is empty after apply (dataset %s)",
+                layer_id,
+                ds.metadata_uuid,
+            )
+
+    @Slot()
+    def _flush_pending_area_map_apply(self) -> None:
+        pending = self._area_map_pending_apply
+        if pending is None:
+            return
+        if self._recompute_running or self._recompute_timer.isActive():
+            QTimer.singleShot(0, self._flush_pending_area_map_apply)
+            return
+        parsed, load_generation, layer_id = pending
+        self._area_map_pending_apply = None
+        self._apply_map_grid_result(parsed, load_generation=load_generation, layer_id=layer_id)
+
+    def _open_area_map(self) -> None:
+        if self._recompute_running or self._recompute_timer.isActive():
+            self._area_map_reload_pending = True
+            return
+        ds = self._selected_dataset
+        if not ds or self._active_area_type() != "celle" or not ds.capabilities or not ds.capabilities.map_selection_layer:
+            return
+        layer_id = ds.capabilities.map_selection_layer
+        # Invalidate in-flight loads before touching the canvas (prevents stale worker apply).
+        self._area_map_load_generation += 1
+        load_generation = self._area_map_load_generation
+        self._area_map_pending_apply = None
+
+        url = geojson_url_for_map_selection_layer(layer_id)
+        if not url:
+            layer = ds.capabilities.map_selection_layer
+            themed_message_box(
+                self,
+                title="Map not available",
+                text=f"No built-in GeoJSON URL for map layer “{layer}”.",
+                informative_text=(
+                    "Geonorge does not publish a stable public filename for this layer id. "
+                    "On kartkatalog.geonorge.no/nedlasting → Velg fra kartblad, open a .geojson/.json "
+                    "request, click Response, and search for a cell code you know from the area list "
+                    "(e.g. 6404-1). Copy that request’s URL and set:\n"
+                    f"- GEONORGE_MAPSELECTION_LAYER_URL_{layer.upper().replace('-', '_')}\n"
+                    "- or GEONORGE_MAPSELECTION_GEOJSON_URL (global override)"
+                ),
+                icon="warning",
+            ).exec()
+            return
+
+        self.area_map_picker.canvas.set_dark_basemap(not self._light_mode)
+        candidate_areas = self._candidate_areas("celle")
+        allowed_codes = frozenset(a.code for a in candidate_areas) if candidate_areas else None
+        selected_codes = frozenset(a.code for a in self._selected_areas)
+        self.area_map_picker.canvas.set_selected_codes(set(selected_codes))
+        self.area_map_picker.canvas.clear_basemap_tiles()
+        self.area_map_picker.canvas.set_grid_cells([])
+        self.area_stack.setCurrentWidget(self.area_map_picker)
+        self.area_map_picker.setVisible(True)
+        self._update_open_map_visibility()
+
+        proj_code = self._selected_projection.code if self._selected_projection else None
+        source_epsg = infer_source_epsg(layer_id=layer_id, projection_code=proj_code)
+
+        # GeoJSON grids are small (<100 KB); load on the UI thread to avoid worker/canvas races.
+        previous_status = self.status_text.text()
+        self._set_status("Loading map grid…")
+        try:
+            text = fetch_text(url)
+            parsed = parse_geojson_grid_cells(
+                text,
+                allowed_codes=allowed_codes,
+                source_epsg=source_epsg,
+            )
+        except Exception as err:
+            self._on_background_task_error(str(err))
+            self._close_area_map()
+            self._set_status(previous_status)
+            return
+
+        self._set_status(previous_status)
+        if load_generation != self._area_map_load_generation:
+            return
+        self._apply_map_grid_result(parsed, load_generation=load_generation, layer_id=layer_id)
+
+    def _area_map_is_open(self) -> bool:
+        return self.area_stack.currentWidget() is self.area_map_picker
+
+    def _sync_area_map_selection(self) -> None:
+        if not self._area_map_is_open():
+            return
+        self.area_map_picker.canvas.set_selected_codes({a.code for a in self._selected_areas})
+
+    def _close_area_map_if_inappropriate(self) -> None:
+        if not self._area_map_is_open():
+            return
+        ds = self._selected_dataset
+        show = (
+            ds is not None
+            and self._active_area_type() == "celle"
+            and ds.capabilities is not None
+            and bool(ds.capabilities.map_selection_layer)
+        )
+        if not show:
+            self._close_area_map()
+
+    def _close_area_map(self) -> None:
+        cancel_pending_tooltips()
+        was_open = self._area_map_is_open()
+        self._area_map_load_generation += 1
+        self._area_map_reload_pending = False
+        self._area_map_pending_apply = None
+        self.area_map_picker.canvas.clear_basemap_tiles()
+        self.area_map_picker.canvas.set_grid_cells([])
+        self.area_stack.setCurrentWidget(self.area_list_section)
+        self.area_map_picker.setVisible(False)
+        self._update_open_map_visibility()
+        if was_open:
+            QTimer.singleShot(0, lambda: self._populate_areas_for_type(self._active_area_type()))
+
+    def _on_area_map_zoom_in(self) -> None:
+        canvas = self.area_map_picker.canvas
+        canvas.set_center(lon=canvas._center_lon, lat=canvas._center_lat, zoom=canvas._zoom + 1)  # type: ignore[attr-defined]
+
+    def _on_area_map_zoom_out(self) -> None:
+        canvas = self.area_map_picker.canvas
+        canvas.set_center(lon=canvas._center_lon, lat=canvas._center_lat, zoom=canvas._zoom - 1)  # type: ignore[attr-defined]
+
+    def _on_area_map_toggled(self, code: str, selected: bool) -> None:
+        if self._active_area_type() != "celle":
+            return
+        candidates = {a.code: a for a in self._candidate_areas("celle")}
+        if selected:
+            if code in candidates and all(a.code != code for a in self._selected_areas):
+                self._selected_areas.append(candidates[code])
+        else:
+            self._selected_areas = [a for a in self._selected_areas if a.code != code]
+
+        # Sync checkboxes in the list view (if present) and refresh dependent panels.
+        self._suppress_area_change = True
+        try:
+            self.area_model.set_checked_keys({a.code for a in self._selected_areas})
+        finally:
+            self._suppress_area_change = False
+        promoted = self._promote_auto_area_type_if_user_selected_areas()
+        self._update_area_all_checkbox()
+        self._update_selected_panel()
+        self._reset_dataset_page()
+        refresh = _REFRESH_AREA_CHECK
+        if promoted:
+            refresh = frozenset({"selected", "download"})
+        self._schedule_recompute_lists(0, refresh=refresh)
 
     def _check_for_updates(self) -> None:
         # Configure your GitHub repo owner/name here (or override with env vars later if you want).
@@ -1680,8 +2273,7 @@ class MainWindow(QMainWindow):
                 buttons=QMessageBox.Ok,
             ).exec()
 
-        worker.signals.result.connect(on_result)
-        worker.signals.error.connect(on_error)
+        connect_worker_signals(worker, result=on_result, error=on_error)
         self._start_worker(worker)
 
     def _rebuild_dataset_index(self) -> None:
@@ -1705,8 +2297,11 @@ class MainWindow(QMainWindow):
         self._schedule_recompute_lists(0)
 
         worker = FuncWorker(lambda: self._discovery.fetch_dataset_refs(text="", max_results=10000))
-        worker.signals.result.connect(self._on_dataset_refs_loaded)
-        worker.signals.error.connect(self._on_background_task_error)
+        connect_worker_signals(
+            worker,
+            result=self._on_dataset_refs_loaded,
+            error=self._on_background_task_error,
+        )
         self._start_worker(worker)
 
     def _sync_dataset_refs_from_cache(self) -> None:
@@ -1714,25 +2309,29 @@ class MainWindow(QMainWindow):
 
     def _populate_area_type_list(self) -> None:
         available = tuple(self._available_area_types_for_selected_dataset())
-        if available == self._area_types_signature:
-            for area_type, button in self.area_type_buttons.items():
-                button.blockSignals(True)
-                button.setChecked(area_type == self._selected_area_type)
-                button.blockSignals(False)
-            return
-        self._area_types_signature = available
-        if self._selected_area_type and self._selected_area_type not in available:
-            self._selected_area_type = None
-            self._selected_areas = []
+        repopulated = available != self._area_types_signature
+        if repopulated:
+            self._area_types_signature = available
+            self._auto_area_type = None
+            if self._selected_area_type and self._selected_area_type not in available:
+                self._selected_area_type = None
+                self._selected_areas = []
+                self._auto_areas = []
+                self._auto_area_codes = set()
             self._area_signature = ()
+            self._area_populate_context = None
         for area_type, button in self.area_type_buttons.items():
             visible = area_type in available
             button.setVisible(visible)
             button.setEnabled(visible)
             button.setToolTip("" if visible else "This area type is not available for the selected dataset.")
-            button.blockSignals(True)
-            button.setChecked(area_type == self._selected_area_type)
-            button.blockSignals(False)
+        if repopulated and self._selected_area_type is None:
+            if self._selected_dataset is not None and len(available) == 1:
+                self._auto_area_type = available[0]
+            else:
+                self._auto_area_type = None
+        self._apply_area_type_button_visuals()
+        self._update_area_details_visibility()
 
     def _available_area_types_for_selected_dataset(self) -> list[AreaType]:
         if not self._selected_dataset:
@@ -1830,6 +2429,28 @@ class MainWindow(QMainWindow):
             target = _format_filter_key(self._selected_format)
             if not any(_format_filter_key(f) == target for f in self._candidate_formats()):
                 self._selected_format = None
+        if self._auto_projection:
+            if not any(p.code == self._auto_projection.code for p in self._candidate_projections()):
+                self._auto_projection = None
+        if self._auto_format:
+            target = _format_filter_key(self._auto_format)
+            if not any(_format_filter_key(f) == target for f in self._candidate_formats()):
+                self._auto_format = None
+        if self._auto_area_type:
+            available_types = self._available_area_types_for_selected_dataset()
+            if self._auto_area_type not in available_types:
+                self._auto_area_type = None
+        if self._auto_areas and self._auto_area_type:
+            if self._selected_dataset:
+                valid_codes = {
+                    a.code for a in self._selected_dataset.areas_by_type.get(self._auto_area_type, [])
+                }
+            else:
+                index = self._ensure_filter_index()
+                mask = self._compose_filter_mask(ignore={"areas"})
+                valid_codes = index.area_codes_for_mask(self._auto_area_type, mask)
+            self._auto_areas = [a for a in self._auto_areas if a.code in valid_codes]
+            self._auto_area_codes = {a.code for a in self._auto_areas}
 
     def _begin_filter_panel_busy(self) -> None:
         cancel_pending_tooltips()
@@ -1842,7 +2463,8 @@ class MainWindow(QMainWindow):
             overlay.setGeometry(overlay.parentWidget().rect())
             overlay.show()
             overlay.raise_()
-        QApplication.processEvents()
+        for overlay in self._busy_overlays:
+            overlay.repaint()
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
     def _end_filter_panel_busy(self) -> None:
@@ -1874,8 +2496,8 @@ class MainWindow(QMainWindow):
                 self._apply_dataset_filter()
             if "area_types" in refresh:
                 self._populate_area_type_list()
-            if "areas" in refresh:
-                self._populate_areas_for_type(self._selected_area_type, preserve_selection=True)
+            if "areas" in refresh and not self._area_map_is_open():
+                self._populate_areas_for_type(self._active_area_type(), preserve_selection=True)
             if "projections" in refresh:
                 self._populate_projections()
             if "formats" in refresh:
@@ -1887,6 +2509,11 @@ class MainWindow(QMainWindow):
         finally:
             self._recompute_running = False
             self._end_filter_panel_busy()
+            if self._pending_area_change:
+                self._pending_area_change = False
+                self._on_areas_changed()
+            if self._area_map_reload_pending:
+                QTimer.singleShot(0, self._flush_pending_area_map_reload)
             if self._profile_ui:
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 logger.info("UI recompute end %.1fms scope=%s", dt_ms, scope)
@@ -1955,16 +2582,51 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self._make_selected_clear_button(tooltip="Unselect", on_click=on_clear))
         row_layout.addWidget(actions, 0)
 
+    def _add_selected_group_header(
+        self,
+        title: str,
+        *,
+        on_clear_all: object | None = None,
+        add_top_gap: bool = False,
+    ) -> None:
+        if add_top_gap:
+            self.selected_rows_layout.addSpacing(14)
+        row = QWidget()
+        row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        row.setMinimumWidth(0)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 4, 0, 2)
+        row_layout.setSpacing(6)
+        label = ElidedLabel(title)
+        label.setObjectName("selectedPanelGroupHeader")
+        label.setToolTip(title)
+        row_layout.addWidget(label, 1)
+        if on_clear_all is not None:
+            actions = QWidget()
+            actions.setFixedWidth(_SELECTED_ROW_ACTIONS_WIDTH)
+            actions_layout = QHBoxLayout(actions)
+            actions_layout.setContentsMargins(0, 0, _SELECTED_ROW_ACTIONS_RIGHT_INSET, 0)
+            actions_layout.setSpacing(0)
+            actions_layout.addStretch(1)
+            actions_layout.addWidget(
+                self._make_selected_clear_button(
+                    tooltip=f"Remove all {title.lower()}",
+                    on_click=on_clear_all,
+                )
+            )
+            row_layout.addWidget(actions, 0)
+        self.selected_rows_layout.addWidget(row, 0, Qt.AlignTop)
+
     def _add_selected_row(
         self,
         *,
         text: str,
         tooltip: str = "",
-        is_dataset_title: bool = False,
         show_copy: bool = False,
         show_open_link: bool = False,
         open_link_tooltip: str = "",
         on_clear: object,
+        auto_selected: bool = False,
     ) -> None:
         row = QWidget()
         row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
@@ -1973,7 +2635,7 @@ class MainWindow(QMainWindow):
         row_layout.setContentsMargins(0, 1, 0, 1)
         row_layout.setSpacing(6)
         label = ElidedLabel(text)
-        label.setObjectName("selectedDatasetTitle" if is_dataset_title else "selectedDatasetValue")
+        label.setObjectName("selectedDatasetValueAuto" if auto_selected else "selectedDatasetValue")
         label.setToolTip(tooltip or text)
         row_layout.addWidget(label, 1)
         self._add_selected_actions(
@@ -2051,29 +2713,58 @@ class MainWindow(QMainWindow):
         self.selected_dataset_link_widget.setEnabled(False)
 
         has_items = False
-        section_started = False
+        first_group = True
+
+        if self._dataset_search_text or self._area_search_text:
+            self._add_selected_group_header(
+                "Search keys",
+                add_top_gap=not first_group,
+                on_clear_all=self._clear_all_search_keys,
+            )
+            first_group = False
+            if self._dataset_search_text:
+                ds_text = f'Dataset: "{self._dataset_search_text}"'
+                self._add_selected_row(
+                    text=ds_text,
+                    tooltip=ds_text,
+                    on_clear=self._clear_selected_search_key,
+                )
+            if self._area_search_text:
+                area_text = f'Area: "{self._area_search_text}"'
+                self._add_selected_row(
+                    text=area_text,
+                    tooltip=area_text,
+                    on_clear=self._clear_selected_area_search_key,
+                )
+            has_items = True
 
         if self._selected_dataset:
             ds = self._selected_dataset
             tags = self._dataset_original_category_label(ds)
             uuid = ds.metadata_uuid
             tip = f"{ds.title}\n{uuid}\n{tags}" if tags else f"{ds.title}\n{uuid}"
+            self._add_selected_group_header("Dataset", add_top_gap=not first_group)
+            first_group = False
             self._add_selected_row(
                 text=ds.title,
                 tooltip=tip,
-                is_dataset_title=True,
                 show_copy=True,
                 show_open_link=True,
                 open_link_tooltip=self._dataset_metadata_url(ds),
                 on_clear=self._clear_selected_dataset,
             )
             has_items = True
-            section_started = True
 
         if self._selected_categories:
-            if section_started:
-                self._add_selected_section_gap()
             categories = sorted(self._selected_categories, key=_norwegian_sort_key)
+            self._add_selected_group_header(
+                "Categories",
+                add_top_gap=not first_group,
+                on_clear_all=self._clear_all_selected_categories
+                if len(categories) >= 2
+                else None,
+            )
+            first_group = False
             if len(categories) <= _SELECTED_GROUP_COLLAPSE_AFTER:
                 self._selected_categories_expanded = False
 
@@ -2092,52 +2783,88 @@ class MainWindow(QMainWindow):
                 add_item=_add_category_row,
             )
             has_items = True
-            section_started = True
 
-        if self._selected_areas:
-            if section_started:
-                self._add_selected_section_gap()
-            areas = sorted(self._selected_areas, key=lambda a: _norwegian_sort_key(a.label))
-            if len(areas) <= _SELECTED_GROUP_COLLAPSE_AFTER:
+        panel_areas: list[tuple[AreaOption, bool]] = []
+        user_codes = {a.code for a in self._selected_areas}
+        for area in sorted(self._selected_areas, key=lambda a: _norwegian_sort_key(a.label)):
+            panel_areas.append((area, False))
+        for area in sorted(self._auto_areas, key=lambda a: _norwegian_sort_key(a.label)):
+            if area.code not in user_codes:
+                panel_areas.append((area, True))
+        if panel_areas:
+            user_only_count = len(self._selected_areas)
+            self._add_selected_group_header(
+                "Areas",
+                add_top_gap=not first_group,
+                on_clear_all=self._clear_all_selected_areas if user_only_count >= 2 else None,
+            )
+            first_group = False
+            if len(panel_areas) <= _SELECTED_GROUP_COLLAPSE_AFTER:
                 self._selected_areas_expanded = False
 
-            def _add_area_row(area: AreaOption) -> None:
+            def _add_area_row(entry: tuple[AreaOption, bool]) -> None:
+                area, is_auto = entry
                 self._add_selected_row(
                     text=area.label,
                     tooltip=area.label,
-                    on_clear=lambda checked=False, a=area: self._clear_selected_area_one(a),
+                    auto_selected=is_auto,
+                    on_clear=(
+                        (lambda checked=False, a=area: self._clear_auto_area_one(a))
+                        if is_auto
+                        else (lambda checked=False, a=area: self._clear_selected_area_one(a))
+                    ),
                 )
 
             self._add_collapsible_selected_items(
-                areas,
+                panel_areas,
                 expanded=self._selected_areas_expanded,
                 on_show_more=lambda: self._set_selected_areas_expanded(True),
                 on_show_less=lambda: self._set_selected_areas_expanded(False),
                 add_item=_add_area_row,
             )
             has_items = True
-            section_started = True
 
         if self._selected_projection:
-            if section_started:
-                self._add_selected_section_gap()
             proj_text = self._selected_projection.label
+            self._add_selected_group_header("Projection", add_top_gap=not first_group)
+            first_group = False
             self._add_selected_row(
                 text=proj_text,
                 tooltip=proj_text,
                 on_clear=self._clear_selected_projection,
             )
             has_items = True
-            section_started = True
+        elif self._auto_projection:
+            proj_text = self._auto_projection.label
+            self._add_selected_group_header("Projection", add_top_gap=not first_group)
+            first_group = False
+            self._add_selected_row(
+                text=proj_text,
+                tooltip=proj_text,
+                auto_selected=True,
+                on_clear=self._clear_auto_projection,
+            )
+            has_items = True
 
         if self._selected_format:
-            if section_started:
-                self._add_selected_section_gap()
             fmt_text = self._selected_format.label
+            self._add_selected_group_header("Format", add_top_gap=not first_group)
+            first_group = False
             self._add_selected_row(
                 text=fmt_text,
                 tooltip=fmt_text,
                 on_clear=self._clear_selected_format,
+            )
+            has_items = True
+        elif self._auto_format:
+            fmt_text = self._auto_format.label
+            self._add_selected_group_header("Format", add_top_gap=not first_group)
+            first_group = False
+            self._add_selected_row(
+                text=fmt_text,
+                tooltip=fmt_text,
+                auto_selected=True,
+                on_clear=self._clear_auto_format,
             )
             has_items = True
 
@@ -2147,6 +2874,7 @@ class MainWindow(QMainWindow):
             none_label.setObjectName("selectedDatasetValue")
             none_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
             self.selected_rows_layout.addWidget(none_label, 0, Qt.AlignTop)
+        self._make_labels_selectable(self.selected_rows_host)
         self.selected_scroll.verticalScrollBar().setValue(0)
 
     def _reset_dataset_page(self) -> None:
@@ -2154,6 +2882,40 @@ class MainWindow(QMainWindow):
             return
         self._dataset_page = 0
         self._dataset_signature = ()
+
+    def _clear_all_search_keys(self) -> None:
+        if not (self._dataset_search_text or self._area_search_text):
+            return
+        self._dataset_search_text = ""
+        self._area_search_text = ""
+        self.dataset_search.clear()
+        self.area_search.clear()
+        self._update_selected_panel()
+        self._area_signature = ()
+        self._reset_dataset_page()
+        self._schedule_recompute_lists(0)
+
+    def _clear_selected_search_key(self) -> None:
+        if not self._dataset_search_text:
+            return
+        self._dataset_search_text = ""
+        self.dataset_search.clear()
+        self._update_selected_panel()
+        self._area_signature = ()
+        self._reset_dataset_page()
+        self._schedule_recompute_lists(0)
+
+    def _clear_selected_area_search_key(self) -> None:
+        if not self._area_search_text and not self.area_search.text().strip():
+            return
+        self._area_search_text = ""
+        self.area_search.clear()
+        self._update_selected_panel()
+        if not self._recompute_running and self._area_search_input_active():
+            self._populate_areas_for_type(self._active_area_type(), preserve_selection=True)
+        else:
+            self._area_signature = ()
+            self._schedule_recompute_lists(0)
 
     def _dataset_page_count(self) -> int:
         if self._dataset_total_rows <= 0:
@@ -2212,26 +2974,38 @@ class MainWindow(QMainWindow):
             self.area_count_label.setText("")
             self._area_signature = ()
             self._selected_areas = []
+            self._auto_areas = []
+            self._auto_area_codes = set()
             area_cols = [1] if self._area_display_name_only else [1, 2]
             clear_tree_index_widgets(self.area_view, area_cols)
             self._suppress_area_change = True
             try:
-                self.area_model.set_items([])
+                self.area_model.set_items([], notify=False)
             finally:
                 self._suppress_area_change = False
             self._update_area_all_checkbox()
             self.area_view.setCursor(Qt.ArrowCursor)
             self.area_view.viewport().setCursor(Qt.ArrowCursor)
             self._update_area_header_visibility()
+            self._update_open_map_visibility()
+            if self._auto_area_type is not None and self._selected_area_type is None:
+                self._apply_area_type_button_visuals()
             return
         self.area_view.setCursor(Qt.ArrowCursor)
         self.area_view.viewport().setCursor(Qt.ArrowCursor)
         if preserve_selection:
-            checked_keys = {a.code for a in self._selected_areas}
+            # Prefer the live model state (avoids losing checks on sort/rebuild if
+            # a click happened while we were recomputing lists).
+            checked_keys = set(self.area_model.checked_keys()) or {a.code for a in self._selected_areas}
         else:
             checked_keys = set()
         scroll_value = self.area_view.verticalScrollBar().value()
+        context = self._area_populate_context_key(area_type)
+        if context != self._area_populate_context:
+            self._area_signature = ()
+            self._area_populate_context = context
         all_areas = self._sort_areas(self._candidate_areas(area_type))
+        self._reconcile_area_search_with_candidates(all_areas)
         if area_type == "landsdekkende":
             total = len(all_areas)
             self.area_count_label.setText(f"({total:,})" if total else "")
@@ -2245,28 +3019,45 @@ class MainWindow(QMainWindow):
             clear_tree_index_widgets(self.area_view, [1, 2])
             self._suppress_area_change = True
             try:
-                self.area_model.set_items([])
+                self.area_model.set_items([], notify=False)
             finally:
                 self._suppress_area_change = False
-            self._selected_areas = self._entire_country_selection(
-                all_areas,
-                preserve_selection=preserve_selection,
-            )
+            if self._selected_area_type == "landsdekkende":
+                self._auto_areas = []
+                self._selected_areas = self._entire_country_selection(
+                    all_areas,
+                    preserve_selection=preserve_selection,
+                )
+            elif self._auto_area_type == "landsdekkende" and len(all_areas) == 1:
+                self._auto_areas = list(all_areas)
+                self._selected_areas = []
+            elif self._auto_area_type == "landsdekkende":
+                self._auto_areas = self._entire_country_selection(all_areas, preserve_selection=False)
+                self._selected_areas = []
+            else:
+                self._auto_areas = []
+                self._selected_areas = []
             self._update_area_all_checkbox()
             self._update_area_details_visibility()
+            self._update_open_map_visibility()
             return
         self._area_display_name_only = self._area_table_name_only(area_type, all_areas)
         areas = self._filter_areas_by_search(all_areas)
         total_areas = len(areas)
         self.area_count_label.setText(f"({total_areas:,})")
-        if total_areas > _AREA_TABLE_ROW_LIMIT:
+        truncated = total_areas > _AREA_TABLE_ROW_LIMIT
+        if truncated:
             self.area_label.setText("Areas")
             display_areas = areas[:_AREA_TABLE_ROW_LIMIT]
-            signature = ("truncated", area_type, total_areas, self._area_search_text)
         else:
             self.area_label.setText("Areas")
             display_areas = areas
-            signature = tuple((a.code, a.name) for a in areas)
+        signature = self._area_list_content_signature(
+            area_type,
+            display_areas,
+            truncated=truncated,
+            filtered_total=total_areas,
+        )
         previous_signature = self._area_signature
         if preserve_selection and signature == previous_signature:
             self._update_area_all_checkbox()
@@ -2281,18 +3072,41 @@ class MainWindow(QMainWindow):
         clear_tree_index_widgets(self.area_view, area_cols)
         self._suppress_area_change = True
         try:
-            self.area_model.set_items(items, name_only=self._area_display_name_only)
+            self.area_model.set_items(
+                items,
+                name_only=self._area_display_name_only,
+                notify=False,
+            )
             if usable_keys:
                 self.area_model.set_checked_keys(usable_keys)
-            elif signature != previous_signature and len(items) == 1:
-                self.area_model.auto_select_if_single_option()
+                self._auto_area_codes = set()
+                self._auto_areas = []
+            elif signature != previous_signature and len(items) == 1 and not self._selected_areas:
+                single = display_areas[0]
+                self._auto_areas = [single]
+                self._auto_area_codes = {single.code}
+                self.area_model.set_checked_keys(set())
+            else:
+                self._auto_area_codes = set()
+                if not self._selected_areas:
+                    self._auto_areas = []
         finally:
             self._suppress_area_change = False
         self._configure_area_columns()
         QTimer.singleShot(0, lambda value=scroll_value: self.area_view.verticalScrollBar().setValue(value))
-        self._selected_areas = self.area_model.checked_payloads()
+        if self._selected_areas:
+            self._auto_areas = []
+            self._auto_area_codes = set()
+        elif not self._auto_areas:
+            self._selected_areas = self.area_model.checked_payloads()
+        self.area_view.viewport().update()
         self._update_area_all_checkbox()
         self._update_area_header_visibility()
+        self._update_open_map_visibility()
+        if self._auto_area_type is not None and self._selected_area_type is None:
+            self._apply_area_type_button_visuals()
+        self._update_selected_panel()
+        self._update_download_button_state()
 
     def _sort_areas(self, areas: list[AreaOption]) -> list[AreaOption]:
         reverse = not self._area_sort_ascending
@@ -2386,15 +3200,23 @@ class MainWindow(QMainWindow):
         self._suppress_single_select_change = True
         try:
             if signature != previous_signature:
+                self._auto_projection = None
                 self.projection_model.set_items(
                     [((p.name.strip() if p.name and p.name.strip() else p.code), p) for p in candidates],
                     tooltips_by_id={id(p): p.label for p in candidates},
                 )
             self._reapply_projection_selection(candidates)
+            if self._selected_projection:
+                self._auto_projection = None
+            elif len(candidates) == 1:
+                self._auto_projection = candidates[0]
+            else:
+                self._auto_projection = None
         finally:
             self._suppress_single_select_change = False
             selection.blockSignals(was_blocked)
         clear_list_index_widgets(self.projection_view)
+        self.projection_view.viewport().update()
 
     def _populate_formats(self) -> None:
         candidates = self._candidate_formats()
@@ -2408,12 +3230,20 @@ class MainWindow(QMainWindow):
         self._suppress_single_select_change = True
         try:
             if signature != previous_signature:
+                self._auto_format = None
                 self.format_model.set_items([(f.label, f) for f in candidates])
             self._reapply_format_selection(candidates)
+            if self._selected_format:
+                self._auto_format = None
+            elif len(candidates) == 1:
+                self._auto_format = candidates[0]
+            else:
+                self._auto_format = None
         finally:
             self._suppress_single_select_change = False
             selection.blockSignals(was_blocked)
         clear_list_index_widgets(self.format_view)
+        self.format_view.viewport().update()
 
     def _reapply_projection_selection(self, candidates: list[ProjectionOption]) -> None:
         selection = self.projection_view.selectionModel()
@@ -2454,8 +3284,9 @@ class MainWindow(QMainWindow):
         ds = self._selected_dataset
         if not ds:
             return []
-        if self._dataset_requires_area(ds) and self._selected_areas:
-            return [area.label for area in self._selected_areas]
+        areas = self._effective_areas()
+        if self._dataset_requires_area(ds) and areas:
+            return [area.label for area in areas]
         return [ds.title]
 
     def _download_task_count(self) -> int:
@@ -2480,11 +3311,12 @@ class MainWindow(QMainWindow):
                 self.download_button.setToolTip("Open this dataset in the Geonorge catalog.")
                 self.download_button.setCursor(Qt.PointingHandCursor)
                 return
-            if self._dataset_requires_area(ds) and (not self._selected_area_type or not self._selected_areas):
-                reasons.append("Select an area.")
-            if ds.projections and not self._selected_projection:
+            if self._dataset_requires_area(ds):
+                if not self._active_area_type() or not self._effective_areas():
+                    reasons.append("Select an area.")
+            if ds.projections and not self._effective_projection():
                 reasons.append("Select a projection.")
-        if not self._selected_format:
+        if not self._effective_format():
             reasons.append("Select a format.")
 
         clickable = not reasons
@@ -2553,12 +3385,69 @@ class MainWindow(QMainWindow):
     def _on_area_type_button_clicked(self, button) -> None:
         if self._recompute_running:
             return
-        selected_area_type: AreaType | None = None
+        clicked_type: AreaType | None = None
         for area_type, candidate in self.area_type_buttons.items():
             if candidate is button:
-                selected_area_type = area_type if button.isChecked() else None
+                clicked_type = area_type
                 break
+        if clicked_type is None:
+            return
+
+        was_auto_only = self._selected_area_type is None and self._auto_area_type == clicked_type
+        was_user = self._selected_area_type == clicked_type
+
+        if was_auto_only:
+            self._auto_area_type = None
+            self._auto_areas = []
+            self._auto_area_codes = set()
+            self._selected_area_type = clicked_type
+            self._close_area_map_if_inappropriate()
+            for area_type, candidate in self.area_type_buttons.items():
+                candidate.blockSignals(True)
+                try:
+                    candidate.setChecked(area_type == clicked_type)
+                finally:
+                    candidate.blockSignals(False)
+            self._apply_area_type_button_visuals()
+            self._selected_areas = []
+            self._area_signature = ()
+            self._clear_area_search_filter(block_field_signals=True)
+            self._update_area_details_visibility()
+            self._reset_dataset_page()
+            self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
+            return
+
+        if was_user and not button.isChecked():
+            self._selected_area_type = None
+            self._selected_areas = []
+            available = tuple(self._available_area_types_for_selected_dataset())
+            self._auto_area_type = clicked_type if len(available) == 1 else None
+            self._auto_areas = []
+            self._auto_area_codes = set()
+            self._close_area_map_if_inappropriate()
+            for area_type, candidate in self.area_type_buttons.items():
+                candidate.blockSignals(True)
+                try:
+                    if area_type == clicked_type:
+                        candidate.setChecked(self._auto_area_type == clicked_type)
+                    else:
+                        candidate.setChecked(False)
+                finally:
+                    candidate.blockSignals(False)
+            self._apply_area_type_button_visuals()
+            self._area_signature = ()
+            self._clear_area_search_filter(block_field_signals=True)
+            self._update_area_details_visibility()
+            self._reset_dataset_page()
+            self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
+            return
+
+        self._auto_area_type = None
+        self._auto_areas = []
+        self._auto_area_codes = set()
+        selected_area_type = clicked_type if button.isChecked() else None
         self._selected_area_type = selected_area_type
+        self._close_area_map_if_inappropriate()
         for area_type, candidate in self.area_type_buttons.items():
             if candidate is not button:
                 candidate.blockSignals(True)
@@ -2568,22 +3457,37 @@ class MainWindow(QMainWindow):
                 candidate.setChecked(False)
         self._selected_areas = []
         self._area_signature = ()
-        self._area_types_signature = ()
-        self._area_search_text = ""
-        self.area_search.blockSignals(True)
-        self.area_search.clear()
-        self.area_search.blockSignals(False)
+        self._clear_area_search_filter(block_field_signals=True)
         self._update_area_details_visibility()
         self._reset_dataset_page()
         self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
 
     def _on_areas_changed(self) -> None:
-        if self._recompute_running or self._suppress_area_change:
+        if self._suppress_area_change:
             return
+        if self._recompute_running:
+            self._pending_area_change = True
+            return
+        checked_keys = self.area_model.checked_keys()
+        promoted_from_auto = bool(self._auto_area_codes & checked_keys)
+        self._auto_areas = []
+        self._auto_area_codes = set()
         self._selected_areas = self.area_model.checked_payloads()
+        if self._promote_auto_area_type_if_user_selected_areas():
+            promoted_from_auto = True
+        if not self._selected_areas:
+            if self._restore_auto_single_area():
+                self._update_area_all_checkbox()
+                self._update_selected_panel()
+                self._update_download_button_state()
+                return
         self._update_area_all_checkbox()
+        self._sync_area_map_selection()
         self._reset_dataset_page()
-        self._schedule_recompute_lists(0, refresh=_REFRESH_AREA_CHECK)
+        refresh = _REFRESH_AREA_CHECK
+        if promoted_from_auto:
+            refresh = frozenset({"selected", "download"})
+        self._schedule_recompute_lists(0, refresh=refresh)
 
     def _remember_area_all_state(self) -> None:
         self._area_all_previous_state = self.area_all_checkbox.checkState()
@@ -2593,10 +3497,17 @@ class MainWindow(QMainWindow):
         # unchecked -> checked, checked -> unchecked, partial -> checked.
         target_checked = _check_state_value(self._area_all_previous_state) != int(Qt.Checked.value)
         self.area_model.set_all_checked(target_checked)
+        self._auto_areas = []
+        self._auto_area_codes = set()
         self._selected_areas = self.area_model.checked_payloads()
         self._update_area_all_checkbox()
+        self._sync_area_map_selection()
         self._reset_dataset_page()
         self._schedule_recompute_lists(0, refresh=_REFRESH_AREA_CHECK)
+
+    def _sync_area_master_checkbox_visibility(self) -> None:
+        show_list = self._area_type_shows_area_list(self._active_area_type())
+        self.area_all_checkbox.setVisible(show_list and self.area_model.rowCount() > 1)
 
     def _update_area_all_checkbox(self) -> None:
         self.area_all_checkbox.blockSignals(True)
@@ -2610,9 +3521,10 @@ class MainWindow(QMainWindow):
             self.area_all_checkbox.update()
         finally:
             self.area_all_checkbox.blockSignals(False)
+        self._sync_area_master_checkbox_visibility()
 
     def _on_area_sort_requested(self, column: str) -> None:
-        if not self._area_type_shows_area_list(self._selected_area_type):
+        if not self._area_type_shows_area_list(self._active_area_type()):
             return
         if self._area_sort_column == column:
             self._area_sort_ascending = not self._area_sort_ascending
@@ -2620,17 +3532,26 @@ class MainWindow(QMainWindow):
             self._area_sort_column = column
             self._area_sort_ascending = True
         self._area_signature = ()
-        self._populate_areas_for_type(self._selected_area_type, preserve_selection=True)
+        self._populate_areas_for_type(self._active_area_type(), preserve_selection=True)
 
     def _on_area_cell_clicked(self, index) -> None:
-        if not index.isValid() or index.column() == 0:
+        if not index.isValid():
+            return
+        if index.column() == 0:
             return
         check_item = self.area_model.item(index.row(), 0)
         if not check_item or not check_item.isCheckable():
             return
-        check_item.setCheckState(
-            Qt.Unchecked if _check_state_value(check_item.checkState()) == int(Qt.Checked.value) else Qt.Checked
-        )
+        key = check_item.data(Qt.UserRole + 1)
+        if isinstance(key, str) and key in self._auto_area_codes:
+            self._auto_area_codes.discard(key)
+            self._auto_areas = [a for a in self._auto_areas if a.code != key]
+            check_item.setCheckState(Qt.Checked)
+            return
+        if _check_state_value(check_item.checkState()) == int(Qt.Checked.value):
+            check_item.setCheckState(Qt.Unchecked)
+        else:
+            check_item.setCheckState(Qt.Checked)
 
     def _on_category_selection_changed(self) -> None:
         if self._recompute_running:
@@ -2664,13 +3585,9 @@ class MainWindow(QMainWindow):
         self._apply_area_search()
 
     def _apply_area_search(self) -> None:
-        if self._recompute_running or not self._area_type_shows_area_list(self._selected_area_type):
+        if self._recompute_running:
             return
-        text = self.area_search.text().strip()
-        if text == self._area_search_text:
-            return
-        self._area_search_text = text
-        self._populate_areas_for_type(self._selected_area_type, preserve_selection=True)
+        self._set_area_search_text(self.area_search.text())
 
     def _apply_dataset_search(self) -> None:
         if self._recompute_running:
@@ -2679,6 +3596,7 @@ class MainWindow(QMainWindow):
         if text == self._dataset_search_text:
             return
         self._dataset_search_text = text
+        self._update_selected_panel()
         self._area_signature = ()
         self._reset_dataset_page()
         self._schedule_recompute_lists(0)
@@ -2717,9 +3635,53 @@ class MainWindow(QMainWindow):
             return
         self._close_dataset_copy_menu()
         self._selected_dataset = None
+        self._clear_user_area_selection()
+        self._clear_auto_area_selection()
+        self._close_area_map_if_inappropriate()
         self._area_signature = ()
         self._update_selected_panel()
         self._schedule_recompute_lists(0, refresh=_REFRESH_DATASET)
+
+    def _clear_all_selected_categories(self) -> None:
+        if len(self._selected_categories) < 2:
+            return
+        self._selected_categories.clear()
+        selection = self.category_view.selectionModel()
+        was_blocked = selection.blockSignals(True)
+        try:
+            selection.clearSelection()
+        finally:
+            selection.blockSignals(was_blocked)
+        self._reset_dataset_page()
+        self._update_selected_panel()
+        self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
+
+    def _clear_all_selected_areas(self) -> None:
+        if len(self._selected_areas) < 2:
+            return
+        self._selected_areas = []
+        self._area_signature = ()
+        if self._selected_area_type is not None:
+            self._selected_area_type = None
+            for area_type, button in self.area_type_buttons.items():
+                if button.isChecked() and area_type != self._auto_area_type:
+                    button.blockSignals(True)
+                    try:
+                        button.setChecked(False)
+                    finally:
+                        button.blockSignals(False)
+            self._apply_area_type_button_visuals()
+            self._update_area_details_visibility()
+        self._suppress_area_change = True
+        try:
+            self.area_model.set_checked_keys(set())
+        finally:
+            self._suppress_area_change = False
+        self._update_area_all_checkbox()
+        self._sync_area_map_selection()
+        self._reset_dataset_page()
+        self._update_selected_panel()
+        self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
 
     def _clear_selected_category(self, category: str) -> None:
         if category not in self._selected_categories:
@@ -2747,11 +3709,40 @@ class MainWindow(QMainWindow):
         finally:
             self._suppress_area_change = False
         self._update_area_all_checkbox()
+        self._sync_area_map_selection()
         self._reset_dataset_page()
         self._update_selected_panel()
         self._schedule_recompute_lists(0, refresh=_REFRESH_AREA_CHECK)
 
+    def _clear_auto_projection(self, checked: bool = False) -> None:
+        del checked
+        if not self._auto_projection:
+            return
+        self._auto_projection = None
+        self.projection_view.viewport().update()
+        self._update_selected_panel()
+        self._update_download_button_state()
+
+    def _clear_auto_format(self, checked: bool = False) -> None:
+        del checked
+        if not self._auto_format:
+            return
+        self._auto_format = None
+        self.format_view.viewport().update()
+        self._update_selected_panel()
+        self._update_download_button_state()
+
+    def _clear_auto_area_one(self, area: AreaOption) -> None:
+        self._auto_areas = [a for a in self._auto_areas if a.code != area.code]
+        self._auto_area_codes.discard(area.code)
+        self.area_view.viewport().update()
+        self._update_selected_panel()
+        self._update_download_button_state()
+
     def _clear_selected_projection(self) -> None:
+        if self._auto_projection:
+            self._clear_auto_projection()
+            return
         if not self._selected_projection:
             return
         self._selected_projection = None
@@ -2760,6 +3751,9 @@ class MainWindow(QMainWindow):
         self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
 
     def _clear_selected_format(self) -> None:
+        if self._auto_format:
+            self._clear_auto_format()
+            return
         if not self._selected_format:
             return
         self._selected_format = None
@@ -2771,13 +3765,23 @@ class MainWindow(QMainWindow):
         cancel_pending_tooltips()
         self._close_dataset_copy_menu()
         self._selected_dataset = None
+        self._close_area_map_if_inappropriate()
         self._selected_categories = set()
         self._selected_categories_expanded = False
         self._selected_areas_expanded = False
         self._selected_projection = None
         self._selected_format = None
+        self._clear_all_auto_selections()
         self._selected_areas = []
         self._area_signature = ()
+        self._dataset_search_text = ""
+        self._area_search_text = ""
+        self.dataset_search.blockSignals(True)
+        self.dataset_search.clear()
+        self.dataset_search.blockSignals(False)
+        self.area_search.blockSignals(True)
+        self.area_search.clear()
+        self.area_search.blockSignals(False)
         self._reset_dataset_page()
         self.category_view.selectionModel().clearSelection()
         self.projection_view.selectionModel().clearSelection()
@@ -2789,6 +3793,7 @@ class MainWindow(QMainWindow):
         finally:
             self._suppress_area_change = False
         self._update_area_all_checkbox()
+        self._sync_area_map_selection()
         self._update_selected_panel()
         self._schedule_recompute_lists(0, scope="full")
 
@@ -2802,12 +3807,22 @@ class MainWindow(QMainWindow):
             return
         if not toggle and self._selected_dataset and self._selected_dataset.metadata_uuid == ds.metadata_uuid:
             return
+        previous_uuid = self._selected_dataset.metadata_uuid if self._selected_dataset else None
         if toggle and self._selected_dataset and self._selected_dataset.metadata_uuid == ds.metadata_uuid:
             self._selected_dataset = None
+            self._clear_user_area_selection()
+            self._clear_auto_area_selection()
         else:
             self._selected_dataset = ds
             self._start_single_dataset_enrichment(ds)
+        if self._area_map_is_open() and previous_uuid != (
+            self._selected_dataset.metadata_uuid if self._selected_dataset else None
+        ):
+            self._refresh_area_map_for_dataset_change()
+        else:
+            self._close_area_map_if_inappropriate()
         self._area_signature = ()
+        self._area_populate_context = None
         self._update_selected_panel()
         self._schedule_recompute_lists(0, refresh=_REFRESH_DATASET)
 
@@ -2826,8 +3841,27 @@ class MainWindow(QMainWindow):
             return
         if toggle and self._selected_projection and self._selected_projection.code == p.code:
             self._selected_projection = None
-        else:
+            candidates = self._candidate_projections()
+            if len(candidates) == 1 and candidates[0].code == p.code:
+                self._auto_projection = candidates[0]
+            else:
+                self._auto_projection = None
+            self._reapply_projection_selection(candidates)
+            self._reset_dataset_page()
+            self._update_selected_panel()
+            self._update_download_button_state()
+            self.projection_view.viewport().update()
+            return
+        if toggle and self._auto_projection and not self._selected_projection and self._auto_projection.code == p.code:
+            self._auto_projection = None
             self._selected_projection = p
+            self._reapply_projection_selection(self._candidate_projections())
+            self._reset_dataset_page()
+            self._update_selected_panel()
+            self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
+            return
+        self._auto_projection = None
+        self._selected_projection = p
         self._reset_dataset_page()
         self._update_selected_panel()
         self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
@@ -2848,8 +3882,27 @@ class MainWindow(QMainWindow):
             return
         if toggle and self._selected_format and _format_filter_key(self._selected_format) == target:
             self._selected_format = None
-        else:
+            candidates = self._candidate_formats()
+            if len(candidates) == 1 and _format_filter_key(candidates[0]) == target:
+                self._auto_format = candidates[0]
+            else:
+                self._auto_format = None
+            self._reapply_format_selection(candidates)
+            self._reset_dataset_page()
+            self._update_selected_panel()
+            self._update_download_button_state()
+            self.format_view.viewport().update()
+            return
+        if toggle and self._auto_format and not self._selected_format and _format_filter_key(self._auto_format) == target:
+            self._auto_format = None
             self._selected_format = fmt
+            self._reapply_format_selection(self._candidate_formats())
+            self._reset_dataset_page()
+            self._update_selected_panel()
+            self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
+            return
+        self._auto_format = None
+        self._selected_format = fmt
         self._reset_dataset_page()
         self._update_selected_panel()
         self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
@@ -2860,9 +3913,9 @@ class MainWindow(QMainWindow):
         self._selected_areas = []
         self._selected_projection = None
         self._selected_format = None
+        self._clear_all_auto_selections()
         self._show_only_downloadable = False
         self._dataset_search_text = ""
-        self._area_search_text = ""
         self._area_signature = ()
         self._category_signature = ()
         self._area_types_signature = ()
@@ -2873,9 +3926,7 @@ class MainWindow(QMainWindow):
         self.dataset_search.blockSignals(True)
         self.dataset_search.clear()
         self.dataset_search.blockSignals(False)
-        self.area_search.blockSignals(True)
-        self.area_search.clear()
-        self.area_search.blockSignals(False)
+        self._clear_area_search_filter(block_field_signals=True)
         self._update_area_details_visibility()
         for button in self.area_type_buttons.values():
             button.blockSignals(True)
@@ -2888,12 +3939,15 @@ class MainWindow(QMainWindow):
         if ds and self._dataset_can_open_in_browser(ds):
             self._open_dataset_in_browser(ds)
             return
-        if not (ds and self._selected_format):
+        fmt = self._effective_format()
+        proj = self._effective_projection()
+        if not (ds and fmt):
             return
-        if ds.projections and not self._selected_projection:
+        if ds.projections and not proj:
             return
         requires_area = self._dataset_requires_area(ds)
-        if requires_area and not self._selected_areas:
+        areas_eff = self._effective_areas()
+        if requires_area and not areas_eff:
             return
         folder = QFileDialog.getExistingDirectory(self, "Choose download folder")
         if not folder:
@@ -2909,10 +3963,8 @@ class MainWindow(QMainWindow):
         self._download_progress_dialog = progress_dialog
         progress_dialog.show()
 
-        proj = self._selected_projection
-        fmt = self._selected_format
-        areas: list[AreaOption | None] = list(self._selected_areas) if requires_area else [None]
-        area_type = self._selected_area_type if requires_area else None
+        areas: list[AreaOption | None] = list(areas_eff) if requires_area else [None]
+        area_type = self._active_area_type() if requires_area else None
 
         projection_code = proj.code if proj else None
         projection_part = proj.code if proj else "any"
@@ -2976,10 +4028,13 @@ class MainWindow(QMainWindow):
         self._set_status("Downloading…")
         worker = FuncWorker(do_download)
         holder["worker"] = worker
-        worker.signals.result.connect(self._on_download_done)
-        worker.signals.error.connect(self._on_download_error)
-        worker.signals.progress.connect(self._on_download_progress)
-        worker.signals.item_completed.connect(progress_dialog.mark_item_complete)
+        connect_worker_signals(
+            worker,
+            result=self._on_download_done,
+            error=self._on_download_error,
+            progress=self._on_download_progress,
+            item_completed=progress_dialog.mark_item_complete,
+        )
         self._start_worker(worker)
 
     def _on_download_done(self, results: object) -> None:
@@ -3013,21 +4068,24 @@ class MainWindow(QMainWindow):
 
     def _download_with_per_area_prompts(self) -> None:
         ds = self._selected_dataset
-        if not (ds and self._selected_format and self._selected_areas):
+        areas_eff = self._effective_areas()
+        fmt_eff = self._effective_format()
+        proj_eff = self._effective_projection()
+        if not (ds and fmt_eff and areas_eff):
             return
-        if ds.projections and not self._selected_projection:
+        if ds.projections and not proj_eff:
             return
         folder = QFileDialog.getExistingDirectory(self, "Choose download folder")
         if not folder:
             return
 
-        proj = self._selected_projection
+        proj = proj_eff
         projection_code = proj.code if proj else None
         projection_part = proj.code if proj else "any"
-        current_format = self._selected_format
-        area_type = self._selected_area_type
+        current_format = fmt_eff
+        area_type = self._active_area_type()
 
-        for a in list(self._selected_areas):
+        for a in list(areas_eff):
             fmt = current_format
             while True:
                 try:
@@ -3139,10 +4197,13 @@ class MainWindow(QMainWindow):
         worker = FuncWorker(enrich_all)
         holder["worker"] = worker
         self._bulk_enrichment = True
-        worker.signals.result.connect(self._on_enriched)
-        worker.signals.error.connect(self._on_enrichment_error)
-        worker.signals.progress.connect(self._on_enrichment_progress)
-        worker.signals.finished.connect(self._on_enrichment_finished)
+        connect_worker_signals(
+            worker,
+            result=self._on_enriched,
+            error=self._on_enrichment_error,
+            progress=self._on_enrichment_progress,
+            finished=self._on_enrichment_finished,
+        )
         self._start_worker(worker)
 
     def _enrichment_order(self) -> list[DatasetAvailability]:
@@ -3175,13 +4236,15 @@ class MainWindow(QMainWindow):
 
         cached = self._datasets[self._dataset_index_by_uuid[ds.metadata_uuid]] if ds.metadata_uuid in self._dataset_index_by_uuid else ds
         worker = FuncWorker(lambda item=ds, known=cached: self._discovery.enrich_one(item, cached=known).dataset)
-        worker.signals.result.connect(self._on_dataset_enriched_partial)
-        worker.signals.error.connect(self._show_error)
-
         def clear_flag() -> None:
             self._enriching_uuids.discard(ds.metadata_uuid)
 
-        worker.signals.finished.connect(clear_flag)
+        connect_worker_signals(
+            worker,
+            result=self._on_dataset_enriched_partial,
+            error=self._show_error,
+            finished=clear_flag,
+        )
         self._start_worker(worker)
 
     def _on_dataset_enriched_partial(self, item: object) -> None:
@@ -3306,8 +4369,11 @@ class MainWindow(QMainWindow):
             return True
 
         worker = FuncWorker(run_reset)
-        worker.signals.result.connect(lambda _: self._on_cache_reset_done())
-        worker.signals.error.connect(self._on_cache_reset_failed)
+        connect_worker_signals(
+            worker,
+            result=lambda _: self._on_cache_reset_done(),
+            error=self._on_cache_reset_failed,
+        )
         self._start_worker(worker)
 
     def _on_cache_reset_done(self) -> None:

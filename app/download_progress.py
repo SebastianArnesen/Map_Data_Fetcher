@@ -81,8 +81,8 @@ class DownloadProgressDialog(QDialog):
         scroll = QScrollArea()
         scroll.setObjectName("downloadProgressScroll")
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.AlwaysOff)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
 
         list_host = QWidget()
         list_host.setObjectName("downloadProgressList")

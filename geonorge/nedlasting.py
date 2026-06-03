@@ -62,6 +62,11 @@ class NedlastingClient:
                 supports_format_selection=bool(res.json.get("supportsFormatSelection")),
                 supports_polygon_selection=bool(res.json.get("supportsPolygonSelection")),
                 supports_area_selection=bool(res.json.get("supportsAreaSelection")),
+                map_selection_layer=(
+                    str(res.json.get("mapSelectionLayer")).strip()
+                    if isinstance(res.json.get("mapSelectionLayer"), str) and str(res.json.get("mapSelectionLayer")).strip()
+                    else None
+                ),
             )
         return None
 

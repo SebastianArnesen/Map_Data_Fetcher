@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from app.crash_handler import GeonorgeApplication, install_crash_handler
 from app.instance_lock import acquire_single_instance_lock, attach_single_instance_lock
+from app.windows_subprocess import install_windows_subprocess_patch
 from app.logging_config import configure_logging
 from app import __version__
 from app.main_window import MainWindow
@@ -39,6 +40,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv
     args = _parse_args(argv)
+    install_windows_subprocess_patch()
     configure_logging()
     configure_ssl_bundle()
     install_crash_handler()

@@ -41,16 +41,40 @@ class DatasetIndex:
         return default_cache_dir()
 
     def clear_all(self) -> None:
-        """Remove local index database and legacy cache files (out-of-box state)."""
+        """
+        Reset local index database and legacy cache files (out-of-box state).
+
+        On Windows, deleting an open SQLite file often fails with WinError 32.
+        Prefer clearing the database contents in-place (DROP/CREATE) rather than
+        unlinking the file.
+        """
         with self._write_lock:
-            for path in (
-                self.path,
-                Path(f"{self.path}-wal"),
-                Path(f"{self.path}-shm"),
-                self.cache_directory() / "cache.json",
-            ):
-                if path.exists():
-                    path.unlink()
+            # Clear the database in-place (robust vs file locking).
+            try:
+                with self._connect() as conn:
+                    conn.execute("PRAGMA wal_checkpoint(FULL)")
+                    conn.execute("DROP TABLE IF EXISTS datasets")
+                    conn.execute("DROP TABLE IF EXISTS refs")
+                    conn.execute("DROP TABLE IF EXISTS tags")
+                    conn.execute("DROP TABLE IF EXISTS cache")
+            except sqlite3.Error:
+                # Best-effort fallback: if schema clearing fails, try removing files.
+                for path in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError:
+                        pass
+
+            # Remove legacy JSON cache if present.
+            try:
+                legacy = self.cache_directory() / "cache.json"
+                if legacy.exists():
+                    legacy.unlink()
+            except OSError:
+                pass
+
+        # Recreate schema for fresh use.
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:

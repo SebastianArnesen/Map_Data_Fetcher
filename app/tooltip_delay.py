@@ -72,12 +72,17 @@ class DelayedToolTipFilter(QObject):
         self._global_pos = QPoint()
         self._model_index = QModelIndex()
         self._anchor_destroyed = False
+        self._destroy_signal_connected = False
 
     def cancel(self) -> None:
         self._cancel()
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if not isinstance(obj, QWidget):
+            return False
+
+        # Native map canvas: hover repaints frequently; skip delayed tooltips here.
+        if type(obj).__name__ in ("MapCanvas", "MapPickerWidget"):
             return False
 
         # QMenu + QAction tooltips and hover are handled by Qt when tooltips are visible.
@@ -143,6 +148,17 @@ class DelayedToolTipFilter(QObject):
             current = current.parentWidget()
         return "", None, QModelIndex()
 
+    def _unlink_anchor_destroyed(self) -> None:
+        if not self._destroy_signal_connected:
+            return
+        anchor = self._anchor
+        self._destroy_signal_connected = False
+        if anchor is not None and _widget_alive(anchor):
+            try:
+                anchor.destroyed.disconnect(self._on_anchor_destroyed)
+            except (RuntimeError, TypeError):
+                pass
+
     def _schedule(
         self,
         anchor: QWidget,
@@ -155,24 +171,26 @@ class DelayedToolTipFilter(QObject):
             return
         self._timer.stop()
         QToolTip.hideText()
-        self._anchor = anchor
+        if self._anchor is not anchor:
+            self._unlink_anchor_destroyed()
+            self._anchor = anchor
+            if _widget_alive(anchor):
+                anchor.destroyed.connect(self._on_anchor_destroyed)
+                self._destroy_signal_connected = True
         self._text = text
         self._global_pos = global_pos
         self._model_index = QModelIndex(index)
         self._anchor_destroyed = False
-        try:
-            anchor.destroyed.disconnect(self._on_anchor_destroyed)
-        except (RuntimeError, TypeError):
-            pass
-        anchor.destroyed.connect(self._on_anchor_destroyed)
         self._timer.start(self._delay_ms)
 
     def _on_anchor_destroyed(self, *_args: object) -> None:
+        self._destroy_signal_connected = False
         self._anchor_destroyed = True
         self._cancel()
 
     def _cancel(self) -> None:
         self._timer.stop()
+        self._unlink_anchor_destroyed()
         self._anchor = None
         self._text = ""
         self._model_index = QModelIndex()

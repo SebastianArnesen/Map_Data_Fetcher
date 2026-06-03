@@ -25,5 +25,5 @@ jobs:
           ruff check .
       - name: Tests
         run: |
-          pytest -q
+          pytest -q -m "not network"
 

@@ -1,5 +1,5 @@
 # Bump when cached enrichment payload shape changes and rows must be rebuilt once.
-ENRICHMENT_VERSION = 2
+ENRICHMENT_VERSION = 3
 
 # Background enrichment: modest parallelism to stay polite to Geonorge APIs.
 ENRICH_MAX_WORKERS = 5
