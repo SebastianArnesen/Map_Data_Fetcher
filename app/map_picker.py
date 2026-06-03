@@ -24,7 +24,7 @@ _HTTP_HEADERS = {
     "Accept": "application/json,image/png,*/*",
     "User-Agent": "GeonorgeDatasets",
 }
-_MAX_TILE_INFLIGHT = 24
+_MAX_TILE_INFLIGHT = 8
 
 
 def _tile_url_template() -> str:
@@ -318,6 +318,7 @@ class MapCanvas(QWidget):
         self._zoom = 5
         self._wheel_delta_accum = 0
         self._dark_basemap = False
+        self._defer_basemap = False
         self._center_lon = 11.0
         self._center_lat = 64.0
         self._drag_last: QPoint | None = None
@@ -359,6 +360,12 @@ class MapCanvas(QWidget):
     def set_selected_codes(self, codes: set[str]) -> None:
         self._selected_codes = set(codes)
         self.update()
+
+    def set_basemap_deferred(self, deferred: bool) -> None:
+        """When True, skip basemap tile fetches until the grid overlay is ready."""
+        self._defer_basemap = bool(deferred)
+        if not deferred:
+            self.update()
 
     def set_dark_basemap(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -418,6 +425,7 @@ class MapCanvas(QWidget):
         if key in self._tile_pix or key in self._tile_inflight:
             return
         if len(self._tile_inflight) >= _MAX_TILE_INFLIGHT:
+            self._schedule_repaint()
             return
         self._tile_inflight.add(key)
         epoch = self._tile_epoch
@@ -572,20 +580,21 @@ class MapCanvas(QWidget):
         tx0, ty0 = _tile_xy_for_global_px(top_left[0], top_left[1])
         tx1, ty1 = _tile_xy_for_global_px(bottom_right[0], bottom_right[1])
 
-        for ty in range(ty0, ty1 + 1):
-            y = _clamp_tile_y(ty, self._zoom)
-            for tx in range(tx0, tx1 + 1):
-                x = _wrap_tile_x(tx, self._zoom)
-                key = (self._zoom, x, y)
-                sx = int(tx * 256 - top_left[0])
-                sy = int(ty * 256 - top_left[1])
-                if pix := self._basemap_pixmap(key):
-                    if pix.isNull():
-                        continue
-                    rect = QRect(sx, sy, 256, 256)
-                    painter.drawPixmap(rect, pix)
-                else:
-                    self._fetch_tile(self._zoom, x, y)
+        if not self._defer_basemap:
+            for ty in range(ty0, ty1 + 1):
+                y = _clamp_tile_y(ty, self._zoom)
+                for tx in range(tx0, tx1 + 1):
+                    x = _wrap_tile_x(tx, self._zoom)
+                    key = (self._zoom, x, y)
+                    sx = int(tx * 256 - top_left[0])
+                    sy = int(ty * 256 - top_left[1])
+                    if pix := self._basemap_pixmap(key):
+                        if pix.isNull():
+                            continue
+                        rect = QRect(sx, sy, 256, 256)
+                        painter.drawPixmap(rect, pix)
+                    else:
+                        self._fetch_tile(self._zoom, x, y)
 
         # Grid overlay
         if self._grid_cells:
@@ -648,8 +657,8 @@ class MapPickerWidget(QWidget):
             except Exception:
                 logger.exception("Failed to build map grid shapes")
                 shapes = []
-            canvas.clear_basemap_tiles()
             canvas.set_grid_cells(shapes)
+            canvas.set_basemap_deferred(False)
             self.fit_to_grid()
         finally:
             canvas.setUpdatesEnabled(True)

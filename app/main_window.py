@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QItemSelectionModel,
+    QThreadPool,
     QTimer,
     QUrl,
     Slot,
@@ -720,6 +721,7 @@ class MainWindow(QMainWindow):
         self._area_types_signature: tuple[AreaType, ...] = ()
         self._area_all_previous_state = Qt.Unchecked
         self._area_map_load_generation = 0
+        self._map_grid_pool: QThreadPool | None = None
         self._area_map_reload_pending = False
         self._area_map_pending_apply: tuple[list, int, str] | None = None
         self._recompute_running = False
@@ -1976,6 +1978,20 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(remove_worker, Qt.ConnectionType.QueuedConnection)
         QApplication.instance().threadPool().start(worker)  # type: ignore[union-attr]
 
+    def _start_map_grid_worker(self, worker: FuncWorker) -> None:
+        """Run map GeoJSON fetch/parse off the global pool so tile jobs cannot starve it."""
+        if self._map_grid_pool is None:
+            self._map_grid_pool = QThreadPool()
+            self._map_grid_pool.setMaxThreadCount(1)
+        self._active_workers.append(worker)
+
+        def remove_worker() -> None:
+            if worker in self._active_workers:
+                self._active_workers.remove(worker)
+
+        worker.signals.finished.connect(remove_worker, Qt.ConnectionType.QueuedConnection)
+        self._map_grid_pool.start(worker)
+
     def _update_open_map_visibility(self) -> None:
         self._update_area_search_row_visibility()
         ds = self._selected_dataset
@@ -2027,6 +2043,7 @@ class MainWindow(QMainWindow):
         layer_id: str,
     ) -> None:
         if load_generation != self._area_map_load_generation:
+            logger.debug("Ignoring stale map grid result for layer %s", layer_id)
             return
         if not self._area_map_is_open():
             return
@@ -2092,6 +2109,7 @@ class MainWindow(QMainWindow):
             return
 
         self.area_map_picker.canvas.set_dark_basemap(not self._light_mode)
+        self.area_map_picker.canvas.set_basemap_deferred(True)
         candidate_areas = self._candidate_areas("celle")
         allowed_codes = frozenset(a.code for a in candidate_areas) if candidate_areas else None
         selected_codes = frozenset(a.code for a in self._selected_areas)
@@ -2115,14 +2133,27 @@ class MainWindow(QMainWindow):
                 allowed_codes=allowed_codes,
                 source_epsg=source_epsg,
             )
+            if not parsed and allowed_codes:
+                logger.info(
+                    "Map grid: 0/%d area codes matched GeoJSON for %s; loading full layer",
+                    len(allowed_codes),
+                    layer_id,
+                )
+                parsed = parse_geojson_grid_cells(
+                    text,
+                    allowed_codes=None,
+                    source_epsg=source_epsg,
+                )
             return parsed, load_generation, layer_id
 
         def on_result(payload: object) -> None:
             if not isinstance(payload, tuple) or len(payload) != 3:
+                logger.warning("Unexpected map grid worker payload: %r", payload)
                 return
             parsed, gen, lid = payload
             self._set_status(previous_status)
             if gen != self._area_map_load_generation:
+                logger.debug("Ignoring stale map grid worker result (gen %s)", gen)
                 return
             self._apply_map_grid_result(parsed, load_generation=gen, layer_id=lid)
 
@@ -2133,7 +2164,7 @@ class MainWindow(QMainWindow):
 
         worker = FuncWorker(work)
         connect_worker_signals(worker, result=on_result, error=on_error)
-        self._start_worker(worker)
+        self._start_map_grid_worker(worker)
 
     def _area_map_is_open(self) -> bool:
         return self.area_stack.currentWidget() is self.area_map_picker
