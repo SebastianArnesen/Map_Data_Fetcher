@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build-windows-installer:
+  build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
@@ -27,69 +27,26 @@ jobs:
           pip install "pyinstaller>=6.20.0"
 
       - name: Install Inno Setup
-        shell: pwsh
-        run: |
-          choco install innosetup -y --no-progress
-          $candidates = @(
-            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
-            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-            "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
-            "$env:ProgramData\chocolatey\lib\InnoSetup\tools\ISCC.exe",
-            "$env:ProgramData\chocolatey\lib\innosetup\tools\ISCC.exe"
-          )
-          foreach ($iscc in $candidates) {
-            if (Test-Path $iscc) {
-              $dir = Split-Path $iscc -Parent
-              echo $dir >> $env:GITHUB_PATH
-              Write-Host "Inno Setup: $iscc"
-              exit 0
-            }
-          }
-          throw "ISCC.exe not found after Inno Setup install"
+        run: choco install innosetup -y --no-progress
 
-      - name: Verify build inputs
-        shell: pwsh
-        run: |
-          if (-not (Test-Path assets\appIcon.ico)) {
-            throw "Missing assets/appIcon.ico (must be committed for CI builds)."
-          }
-
-      - name: Verify tag matches app version
+      - name: Verify tag matches version
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $line = Select-String -Path .\app\__init__.py -Pattern '^__version__\s*=\s*"(.*)"' | Select-Object -First 1
-          if (-not $line) { throw "Could not read __version__ from app/__init__.py" }
-          $version = $line.Matches[0].Groups[1].Value
+          $version = (Select-String -Path .\app\__init__.py -Pattern '^__version__\s*=\s*"(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $version) { throw "Could not read __version__ from app/__init__.py" }
           $expected = "v$version"
-          Write-Host "Git tag:     $tag"
-          Write-Host "App version: $version (expected tag $expected)"
+          Write-Host "Tag: $tag  App: $version  Expected tag: $expected"
           if ($tag -ne $expected) {
-            throw "Tag '$tag' does not match app/__init__.py __version__ '$version'. Bump __version__ and use tag '$expected', or retag after fixing."
+            throw "Tag '$tag' does not match __version__ '$version'. Use tag '$expected'."
           }
 
-      - name: Build executable
+      - name: Build exe and installer
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           .\build_exe.ps1
-          if (-not (Test-Path dist\GeonorgeDatasets.exe)) {
-            throw "PyInstaller did not produce dist\GeonorgeDatasets.exe"
-          }
-
-      - name: Build installer
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
           .\build_installer.ps1
-          if (-not (Test-Path dist\GeonorgeDatasetsSetup.exe)) {
-            throw "Inno Setup did not produce dist\GeonorgeDatasetsSetup.exe"
-          }
-
-      - name: Verify artifacts
-        shell: pwsh
-        run: |
           Get-ChildItem dist\GeonorgeDatasets.exe, dist\GeonorgeDatasetsSetup.exe | Format-Table Name, Length
 
       - name: Publish GitHub Release

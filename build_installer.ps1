@@ -73,6 +73,9 @@ if (-not (Test-Path ".\\dist\\GeonorgeDatasets.exe")) {
 }
 
 & $iscc "/DAppVersion=$version" ".\\installer\\GeonorgeDatasets.iss"
+if (-not (Test-Path ".\\dist\\GeonorgeDatasetsSetup.exe")) {
+  Write-Error "Inno Setup did not produce dist\\GeonorgeDatasetsSetup.exe"
+}
 Write-Host ""
 Write-Host "Built installer: dist\\GeonorgeDatasetsSetup.exe"
 
