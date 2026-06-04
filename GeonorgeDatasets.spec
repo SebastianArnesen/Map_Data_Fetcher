@@ -1,16 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 datas = [('assets\\appIcon.ico', 'assets')]
 datas += collect_data_files('certifi')
+_pyproj_datas, _pyproj_binaries, _pyproj_hiddenimports = collect_all('pyproj')
+datas += _pyproj_datas
 
 
 a = Analysis(
     ['app\\run.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=_pyproj_binaries,
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=_pyproj_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -30,7 +32,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

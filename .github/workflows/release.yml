@@ -19,13 +19,30 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install "pyinstaller>=6.20.0"
 
       - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $paths = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6",
+            "${env:ProgramFiles(x86)}\Inno Setup 7",
+            "$env:ProgramFiles\Inno Setup 6",
+            "$env:ProgramFiles\Inno Setup 7"
+          )
+          foreach ($dir in $paths) {
+            if (Test-Path "$dir\ISCC.exe") {
+              echo $dir >> $env:GITHUB_PATH
+              Write-Host "Inno Setup: $dir\ISCC.exe"
+              exit 0
+            }
+          }
+          throw "ISCC.exe not found after Inno Setup install"
 
       - name: Verify tag matches app version
         shell: pwsh
@@ -35,19 +52,19 @@ jobs:
           if (-not $line) { throw "Could not read __version__ from app/__init__.py" }
           $version = $line.Matches[0].Groups[1].Value
           $expected = "v$version"
+          Write-Host "Git tag:     $tag"
+          Write-Host "App version: $version (expected tag $expected)"
           if ($tag -ne $expected) {
-            throw "Tag '$tag' does not match app/__init__.py __version__ '$version' (expected tag '$expected')."
+            throw "Tag '$tag' does not match app/__init__.py __version__ '$version'. Bump __version__ and use tag '$expected', or retag after fixing."
           }
 
       - name: Build executable
         shell: pwsh
-        run: |
-          powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+        run: .\build_exe.ps1
 
       - name: Build installer
         shell: pwsh
-        run: |
-          powershell -ExecutionPolicy Bypass -File .\build_installer.ps1
+        run: .\build_installer.ps1
 
       - name: Verify artifacts
         shell: pwsh
@@ -61,3 +78,4 @@ jobs:
             dist/GeonorgeDatasets.exe
             dist/GeonorgeDatasetsSetup.exe
           generate_release_notes: true
+          fail_on_unmatched_files: true
