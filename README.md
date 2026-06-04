@@ -2,7 +2,7 @@
 
 Desktop app for browsing and downloading map datasets from [Geonorge](https://www.geonorge.no/).
 
-Current version: **1.1.0** (see `app/__init__.py`).
+Current version: **1.2.0** (see `app/__init__.py`).
 
 ## License
 
@@ -10,7 +10,7 @@ MIT (see `LICENSE`).
 
 ## Run from source
 
-Requires **Python 3.11+**. On macOS and most Linux systems the command is **`python3`**, not `python` (unless you use a venv — then `python` works after activation).
+Requires **Python 3.11+**. On macOS and most Linux systems the command is `**python3`**, not `python` (unless you use a venv — then `python` works after activation).
 
 ```bash
 # macOS / Linux — use python3 for the venv
@@ -80,7 +80,21 @@ Output: `dist\GeonorgeDatasetsDebug.exe`
 
 ## Release checklist (Windows)
 
-- Bump version: edit `app/__init__.py` (`__version__ = "x.y.z"`)
+### GitHub Actions (recommended)
+
+1. Bump version in `app/__init__.py` (`__version__ = "x.y.z"`) and update the version line in this README if you keep it in sync.
+2. Commit and push to `main`.
+3. Tag must match the version with a `v` prefix, then push the tag:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+The [Release workflow](.github/workflows/release.yml) runs on `windows-latest`, calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name must equal `v` + `__version__` (e.g. app `1.2.0` → tag `v1.2.0`).
+
+### Local build (optional)
+
 - Build release exe: `powershell -ExecutionPolicy Bypass -File .\build_exe.ps1`
 - (Optional) Build debug exe: `powershell -ExecutionPolicy Bypass -File .\build_debug_exe.ps1`
 - Build installer: `powershell -ExecutionPolicy Bypass -File .\build_installer.ps1`
@@ -95,11 +109,13 @@ Output: `dist\GeonorgeDatasetsDebug.exe`
 
 ## Data on disk
 
-| OS | Folder |
-|----|--------|
-| Windows | `%APPDATA%\GeonorgeDatasets\` |
-| macOS | `~/Library/Application Support/GeonorgeDatasets/` |
-| Linux | `$XDG_DATA_HOME/GeonorgeDatasets/` or `~/.local/share/GeonorgeDatasets/` |
+
+| OS      | Folder                                                                   |
+| ------- | ------------------------------------------------------------------------ |
+| Windows | `%APPDATA%\GeonorgeDatasets\`                                            |
+| macOS   | `~/Library/Application Support/GeonorgeDatasets/`                        |
+| Linux   | `$XDG_DATA_HOME/GeonorgeDatasets/` or `~/.local/share/GeonorgeDatasets/` |
+
 
 Files in that folder:
 

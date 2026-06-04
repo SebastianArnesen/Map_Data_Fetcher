@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.20.0"
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Verify tag matches app version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $line = Select-String -Path .\app\__init__.py -Pattern '^__version__\s*=\s*"(.*)"' | Select-Object -First 1
+          if (-not $line) { throw "Could not read __version__ from app/__init__.py" }
+          $version = $line.Matches[0].Groups[1].Value
+          $expected = "v$version"
+          if ($tag -ne $expected) {
+            throw "Tag '$tag' does not match app/__init__.py __version__ '$version' (expected tag '$expected')."
+          }
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\build_installer.ps1
+
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\GeonorgeDatasets.exe, dist\GeonorgeDatasetsSetup.exe | Format-Table Name, Length
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/GeonorgeDatasets.exe
+            dist/GeonorgeDatasetsSetup.exe
+          generate_release_notes: true
