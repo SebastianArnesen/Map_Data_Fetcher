@@ -15,6 +15,8 @@ from PySide6.QtGui import (
     QStandardItem,
     QStandardItemModel,
 )
+from app.theme import font_points
+
 from PySide6.QtWidgets import (
     QApplication,
     QListView,
@@ -767,7 +769,7 @@ class DatasetItemDelegate(QStyledItemDelegate):
         )
         font = QFont(option.font)
         if col == DATASET_COL_TAGS:
-            font.setPointSize(10)
+            font.setPointSize(font_points(10))
             font.setWeight(QFont.DemiBold)
         painter.setFont(font)
         painter.setPen(color)
@@ -843,7 +845,7 @@ class TwoColumnListModel(QStandardItemModel):
             link_item = QStandardItem("")
             secondary_item = QStandardItem(secondary)
             secondary_font = QFont()
-            secondary_font.setPointSize(10)
+            secondary_font.setPointSize(font_points(10))
             secondary_font.setWeight(QFont.DemiBold)
             secondary_item.setFont(secondary_font)
             copy_item.setTextAlignment(Qt.AlignCenter)

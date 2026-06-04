@@ -87,10 +87,14 @@ from app.theme import (
     busy_overlay_fill,
     checkbox_fill_border,
     checkbox_tick_color,
+    default_text_scale_name,
     palette_for,
     qcolor,
     resolve_light_mode,
+    scale_name_to_factor,
+    scale_pixels,
     set_filter_busy_flag,
+    set_text_scale_factor,
     theme_toggle_colors,
     theme_toggle_knob_border,
 )
@@ -792,6 +796,21 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.reset_cache_button)
         toolbar_layout.addWidget(self.check_updates_button)
         toolbar_layout.addStretch(1)
+        self.text_scale_group = QButtonGroup(self)
+        self.text_scale_normal_button = QPushButton("A")
+        self.text_scale_normal_button.setObjectName("toolbarButton")
+        self.text_scale_normal_button.setCheckable(True)
+        self.text_scale_normal_button.setCursor(Qt.PointingHandCursor)
+        self.text_scale_normal_button.setToolTip("Standard text size")
+        self.text_scale_large_button = QPushButton("A+")
+        self.text_scale_large_button.setObjectName("toolbarButton")
+        self.text_scale_large_button.setCheckable(True)
+        self.text_scale_large_button.setCursor(Qt.PointingHandCursor)
+        self.text_scale_large_button.setToolTip("Larger text and controls (recommended on macOS/Linux)")
+        self.text_scale_group.addButton(self.text_scale_normal_button, 0)
+        self.text_scale_group.addButton(self.text_scale_large_button, 1)
+        toolbar_layout.addWidget(self.text_scale_normal_button)
+        toolbar_layout.addWidget(self.text_scale_large_button)
         self.theme_toggle = ThemeToggleSwitch(self.top_toolbar)
         toolbar_layout.addWidget(self.theme_toggle)
 
@@ -1304,14 +1323,71 @@ class MainWindow(QMainWindow):
         self.menuBar().setVisible(False)
 
     def _apply_style(self) -> None:
-        apply_base_style()
         settings = QSettings("Geonorge", "Datasets")
+        scale_name = str(settings.value("ui/text_scale", default_text_scale_name()) or default_text_scale_name())
+        if scale_name not in ("normal", "large"):
+            scale_name = default_text_scale_name()
+        self._text_scale_name = "normal"
+        self._apply_text_scale(scale_name, persist=False)
         light = settings.value("ui/light_mode", False, type=bool)
-        self._on_theme_toggle(light)
+        self._light_mode = bool(light)
+        self._on_theme_toggle(light, refresh_style=False)
 
-    def _on_theme_toggle(self, light_mode: bool) -> None:
+    def _apply_text_scale(self, scale_name: str, *, persist: bool = True) -> None:
+        self._text_scale_name = "large" if scale_name == "large" else "normal"
+        factor = scale_name_to_factor(self._text_scale_name)
+        set_text_scale_factor(factor)
+        apply_base_style(ui_scale=factor)
+        self.setStyleSheet(build_stylesheet(palette_for(self._light_mode), ui_scale=factor))
+        self._apply_scaled_widget_metrics()
+        if hasattr(self, "text_scale_normal_button"):
+            self.text_scale_normal_button.setChecked(self._text_scale_name == "normal")
+            self.text_scale_large_button.setChecked(self._text_scale_name == "large")
+        if persist:
+            QSettings("Geonorge", "Datasets").setValue("ui/text_scale", self._text_scale_name)
+        if hasattr(self, "dataset_view"):
+            self.dataset_view.viewport().update()
+
+    def _apply_scaled_widget_metrics(self) -> None:
+        search_h = scale_pixels(34, ui_scale=scale_name_to_factor(self._text_scale_name))
+        search_btn_w = scale_pixels(38, ui_scale=scale_name_to_factor(self._text_scale_name))
+        map_btn_pad = scale_pixels(20, ui_scale=scale_name_to_factor(self._text_scale_name))
+        for widget in (
+            getattr(self, "dataset_search", None),
+            getattr(self, "area_search", None),
+            getattr(self, "dataset_search_combo", None),
+            getattr(self, "area_search_combo", None),
+        ):
+            if widget is not None:
+                widget.setFixedHeight(search_h)
+        for button in (
+            getattr(self, "dataset_search_button", None),
+            getattr(self, "area_search_button", None),
+        ):
+            if button is not None:
+                button.setFixedSize(search_btn_w, search_h)
+        for button in (
+            getattr(self, "area_map_zoom_out", None),
+            getattr(self, "area_map_zoom_in", None),
+            getattr(self, "open_map_button", None),
+            getattr(self, "close_map_button", None),
+        ):
+            if button is not None:
+                button.setFixedHeight(search_h)
+                if button in (self.open_map_button, self.close_map_button):
+                    button.setFixedWidth(max(button.sizeHint().width(), search_h) + map_btn_pad)
+
+    def _on_text_scale_clicked(self, button_id: int) -> None:
+        scale_name = "large" if button_id == 1 else "normal"
+        if scale_name == getattr(self, "_text_scale_name", "normal"):
+            return
+        self._apply_text_scale(scale_name)
+
+    def _on_theme_toggle(self, light_mode: bool, *, refresh_style: bool = True) -> None:
         self._light_mode = bool(light_mode)
-        self.setStyleSheet(build_stylesheet(palette_for(self._light_mode)))
+        if refresh_style:
+            factor = scale_name_to_factor(getattr(self, "_text_scale_name", "normal"))
+            self.setStyleSheet(build_stylesheet(palette_for(self._light_mode), ui_scale=factor))
         QSettings("Geonorge", "Datasets").setValue("ui/light_mode", self._light_mode)
         if hasattr(self, "theme_toggle"):
             self.theme_toggle.set_light_mode(self._light_mode)
@@ -1397,7 +1473,8 @@ class MainWindow(QMainWindow):
             viewport = getattr(widget, "viewport", None)
             if callable(viewport):
                 widget.viewport().installEventFilter(self)
-        self.theme_toggle.light_mode_changed.connect(self._on_theme_toggle)
+        self.theme_toggle.light_mode_changed.connect(lambda light: self._on_theme_toggle(light))
+        self.text_scale_group.idClicked.connect(self._on_text_scale_clicked)
         self.download_button.clicked.connect(self._start_download_flow)
         self._update_area_details_visibility()
 

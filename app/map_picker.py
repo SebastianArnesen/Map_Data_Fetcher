@@ -77,7 +77,8 @@ def _tile_cache_path(z: int, x: int, y: int) -> Path:
 
 
 class _TileFetchSignals(QObject):
-    tile_ready = Signal(int, int, int, int, QImage)  # epoch,z,x,y,img
+    # Raw PNG bytes; decoded on the GUI thread (QImage from worker threads is unreliable on macOS).
+    tile_ready = Signal(int, int, int, int, object)  # epoch,z,x,y,payload: bytes
 
 
 def _requests_verify() -> str | bool:
@@ -86,26 +87,70 @@ def _requests_verify() -> str | bool:
     return ca_bundle_path()
 
 
-def _fetch_tile_image(z: int, x: int, y: int, url_template: str, timeout_s: float = 10.0) -> QImage | None:
+def _fetch_tile_bytes(z: int, x: int, y: int, url_template: str, timeout_s: float = 10.0) -> bytes | None:
     url = url_template.format(z=z, x=x, y=y)
     try:
         resp = requests.get(
             url,
             timeout=timeout_s,
-            headers={**_HTTP_HEADERS, "Accept": "image/png,*/*"},
+            headers={
+                **_HTTP_HEADERS,
+                "Accept": "image/png,*/*",
+                "Referer": "https://www.geonorge.no/",
+            },
             verify=_requests_verify(),
         )
         if resp.status_code != 200 or not resp.content:
             logger.debug("Basemap tile HTTP %s for %s", resp.status_code, url)
             return None
-        img = QImage.fromData(resp.content)
-        if img.isNull():
-            logger.debug("Basemap tile decode failed for %s", url)
-            return None
-        return img
+        return resp.content
     except Exception:
         logger.debug("Basemap tile fetch failed for %s", url, exc_info=True)
         return None
+
+
+def _image_from_tile_bytes(payload: bytes) -> QImage | None:
+    if not payload:
+        return None
+    img = QImage.fromData(payload, "PNG")
+    if img.isNull():
+        img = QImage.fromData(payload)
+    if img.isNull():
+        return None
+    return img
+
+
+def _viewport_lonlat_bounds(
+    *,
+    center_lon: float,
+    center_lat: float,
+    zoom: int,
+    width: int,
+    height: int,
+) -> tuple[float, float, float, float]:
+    center_px = lonlat_to_global_px(center_lon, center_lat, zoom)
+    top_left = (center_px[0] - width / 2.0, center_px[1] - height / 2.0)
+    bottom_right = (center_px[0] + width / 2.0, center_px[1] + height / 2.0)
+    lon0, lat0 = global_px_to_lonlat(top_left[0], top_left[1], zoom)
+    lon1, lat1 = global_px_to_lonlat(bottom_right[0], bottom_right[1], zoom)
+    return min(lon0, lon1), min(lat0, lat1), max(lon0, lon1), max(lat0, lat1)
+
+
+def _shape_intersects_viewport(
+    shape: GridCellShape,
+    *,
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+) -> bool:
+    sl_min_lon, sl_min_lat, sl_max_lon, sl_max_lat = shape.bbox_lonlat
+    return not (
+        sl_max_lon < min_lon
+        or sl_min_lon > max_lon
+        or sl_max_lat < min_lat
+        or sl_min_lat > max_lat
+    )
 
 
 def _extract_feature_code(props: dict[str, Any]) -> str | None:
@@ -433,8 +478,9 @@ class MapCanvas(QWidget):
         cache_path = _tile_cache_path(z, x, y)
         if cache_path.exists():
             try:
-                img = QImage(str(cache_path))
-                if not img.isNull() and epoch == self._tile_epoch:
+                cached = cache_path.read_bytes()
+                img = _image_from_tile_bytes(cached)
+                if img is not None and epoch == self._tile_epoch:
                     self._remember_tile(key, img)
                     self._tile_inflight.discard(key)
                     self._schedule_repaint()
@@ -443,17 +489,16 @@ class MapCanvas(QWidget):
                 pass
 
         def work() -> None:
-            # Network + disk only — no Qt GUI access on this thread.
-            img = _fetch_tile_image(z, x, y, self._tile_url_template)
-            if img is None:
-                self._signals.tile_ready.emit(epoch, z, x, y, QImage())
+            payload = _fetch_tile_bytes(z, x, y, self._tile_url_template)
+            if payload is None:
+                self._signals.tile_ready.emit(epoch, z, x, y, b"")
                 return
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
-                img.save(str(cache_path), "PNG")
+                cache_path.write_bytes(payload)
             except Exception:
                 pass
-            self._signals.tile_ready.emit(epoch, z, x, y, img)
+            self._signals.tile_ready.emit(epoch, z, x, y, payload)
 
         from PySide6.QtCore import QRunnable, QThreadPool
 
@@ -463,12 +508,14 @@ class MapCanvas(QWidget):
 
         QThreadPool.globalInstance().start(_Run())
 
-    def _on_tile_ready(self, epoch: int, z: int, x: int, y: int, img: QImage) -> None:
+    def _on_tile_ready(self, epoch: int, z: int, x: int, y: int, payload: object) -> None:
         if epoch != self._tile_epoch:
             return
         key = (z, x, y)
         self._tile_inflight.discard(key)
-        self._remember_tile(key, img)
+        raw = payload if isinstance(payload, (bytes, bytearray)) else b""
+        img = _image_from_tile_bytes(bytes(raw))
+        self._remember_tile(key, img if img is not None else QImage())
         self._schedule_repaint()
 
     def _screen_to_lonlat(self, pt: QPoint) -> tuple[float, float]:
@@ -480,8 +527,24 @@ class MapCanvas(QWidget):
         return global_px_to_lonlat(gx, gy, self._zoom)
 
     def _grid_hit_test(self, lon: float, lat: float) -> str | None:
-        # Quick bbox prune, then path.contains.
+        w = max(1, self.width())
+        h = max(1, self.height())
+        vmin_lon, vmin_lat, vmax_lon, vmax_lat = _viewport_lonlat_bounds(
+            center_lon=self._center_lon,
+            center_lat=self._center_lat,
+            zoom=self._zoom,
+            width=w,
+            height=h,
+        )
         for code, shape in self._grid_cells.items():
+            if not _shape_intersects_viewport(
+                shape,
+                min_lon=vmin_lon,
+                min_lat=vmin_lat,
+                max_lon=vmax_lon,
+                max_lat=vmax_lat,
+            ):
+                continue
             min_lon, min_lat, max_lon, max_lat = shape.bbox_lonlat
             if lon < min_lon or lon > max_lon or lat < min_lat or lat > max_lat:
                 continue
@@ -596,6 +659,14 @@ class MapCanvas(QWidget):
                     else:
                         self._fetch_tile(self._zoom, x, y)
 
+        vmin_lon, vmin_lat, vmax_lon, vmax_lat = _viewport_lonlat_bounds(
+            center_lon=self._center_lon,
+            center_lat=self._center_lat,
+            zoom=self._zoom,
+            width=w,
+            height=h,
+        )
+
         # Grid overlay
         if self._grid_cells:
             selected_fill = QColor(0, 120, 215, 110) if not self._dark_basemap else QColor(111, 150, 255, 130)
@@ -607,6 +678,14 @@ class MapCanvas(QWidget):
 
             for code, shape in self._grid_cells.items():
                 if shape.path_lonlat.elementCount() == 0:
+                    continue
+                if not _shape_intersects_viewport(
+                    shape,
+                    min_lon=vmin_lon,
+                    min_lat=vmin_lat,
+                    max_lon=vmax_lon,
+                    max_lat=vmax_lat,
+                ):
                     continue
                 min_lon, min_lat, max_lon, max_lat = shape.bbox_lonlat
                 if not all(math.isfinite(v) for v in shape.bbox_lonlat):

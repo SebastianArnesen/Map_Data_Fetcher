@@ -8,10 +8,44 @@ via helper functions at the bottom of this file.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication, QWidget
+
+UI_SCALE_LARGE = 1.2
+_TEXT_SCALE_FACTOR = 1.0
+
+
+def default_text_scale_name() -> str:
+    """First-run default: larger UI on macOS and Linux."""
+    if sys.platform in ("darwin", "linux"):
+        return "large"
+    return "normal"
+
+
+def scale_name_to_factor(name: str | None) -> float:
+    return UI_SCALE_LARGE if name == "large" else 1.0
+
+
+def set_text_scale_factor(scale: float) -> None:
+    global _TEXT_SCALE_FACTOR
+    _TEXT_SCALE_FACTOR = max(1.0, min(1.5, float(scale)))
+
+
+def text_scale_factor() -> float:
+    return _TEXT_SCALE_FACTOR
+
+
+def font_points(base: int, *, ui_scale: float | None = None) -> int:
+    scale = text_scale_factor() if ui_scale is None else ui_scale
+    return max(8, round(base * scale))
+
+
+def scale_pixels(value: int, *, ui_scale: float | None = None) -> int:
+    scale = text_scale_factor() if ui_scale is None else ui_scale
+    return max(value, round(value * scale))
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +393,16 @@ def _clear_button_block(selector: str) -> str:
     """
 
 
-def build_stylesheet(c: ThemeColors) -> str:
+def build_stylesheet(c: ThemeColors, *, ui_scale: float | None = None) -> str:
     """Build the full application QSS for one theme."""
+    scale = text_scale_factor() if ui_scale is None else ui_scale
+
+    def fs(pt: float) -> str:
+        return f"{max(8, round(pt * scale))}pt"
+
+    def sp(px: int) -> int:
+        return max(px, round(px * scale))
+
     s = SHARED
     filter_checkbox_rule = ""
     if c is LIGHT:
@@ -393,7 +435,7 @@ def build_stylesheet(c: ThemeColors) -> str:
         }}
         QLabel {{
             color: {c.window_fg};
-            font-size: 12pt;
+            font-size: {fs(12)};
             font-weight: 700;
             border: none;
             background: transparent;
@@ -494,9 +536,9 @@ def build_stylesheet(c: ThemeColors) -> str:
             border: 1px solid {c.input_border};
             border-radius: 8px;
             padding: 0px 30px 0px 10px;
-            height: 32px;
-            min-height: 32px;
-            max-height: 32px;
+            height: {sp(32)}px;
+            min-height: {sp(32)}px;
+            max-height: {sp(32)}px;
             selection-background-color: {c.selection_bg};
             selection-color: {c.selection_fg};
         }}
@@ -511,7 +553,7 @@ def build_stylesheet(c: ThemeColors) -> str:
             background: transparent;
             border: none;
             border-radius: 6px;
-            font-size: 14pt;
+            font-size: {fs(14)};
             font-weight: 700;
             padding: 0px 4px;
         }}
@@ -534,11 +576,11 @@ def build_stylesheet(c: ThemeColors) -> str:
             border-top-left-radius: 0px;
             border-bottom-left-radius: 0px;
             padding: 0px;
-            min-width: 38px;
-            max-width: 38px;
-            height: 32px;
-            min-height: 32px;
-            max-height: 32px;
+            min-width: {sp(38)}px;
+            max-width: {sp(38)}px;
+            height: {sp(32)}px;
+            min-height: {sp(32)}px;
+            max-height: {sp(32)}px;
         }}
         QWidget#datasetSearchCombo QPushButton#datasetSearchButton:hover,
         QWidget#areaSearchCombo QPushButton#areaSearchButton:hover {{
@@ -567,10 +609,10 @@ def build_stylesheet(c: ThemeColors) -> str:
             border: 1px solid {c.button_border};
             border-radius: 8px;
             padding: 0px;
-            min-width: 32px;
-            max-width: 32px;
-            min-height: 32px;
-            max-height: 32px;
+            min-width: {sp(32)}px;
+            max-width: {sp(32)}px;
+            min-height: {sp(32)}px;
+            max-height: {sp(32)}px;
         }}
         QPushButton#pagerButton:hover {{
             background: {c.button_hover_bg};
@@ -593,7 +635,7 @@ def build_stylesheet(c: ThemeColors) -> str:
             border: none;
             border-radius: 0px;
             padding: 0px;
-            font-size: 12pt;
+            font-size: {fs(12)};
             font-weight: 700;
         }}
         QPushButton#selectedPanelClearAllButton:hover {{ color: {s.clear_hover}; }}
@@ -616,7 +658,7 @@ def build_stylesheet(c: ThemeColors) -> str:
             border: 1px solid {s.download};
             border-radius: 8px;
             padding: 10px 18px;
-            font-size: 11pt;
+            font-size: {fs(11)};
             font-weight: 700;
         }}
         QPushButton#downloadButton:hover {{ background: {s.download_hover}; border-color: {s.download_hover}; }}
@@ -693,33 +735,33 @@ def build_stylesheet(c: ThemeColors) -> str:
             color: {c.statusbar_fg};
             border-top: 1px solid {c.statusbar_border};
         }}
-        QLabel#statusLabel {{ font-size: 9pt; font-weight: 500; color: {c.status_label_fg}; }}
-        QLabel#copyStatusLabel {{ font-size: 9pt; font-weight: 600; color: {c.copy_status_fg}; }}
-        QLabel#secondaryHeaderLabel {{ color: {c.secondary_label_fg}; font-size: 10pt; font-weight: 600; }}
+        QLabel#statusLabel {{ font-size: {fs(9)}; font-weight: 500; color: {c.status_label_fg}; }}
+        QLabel#copyStatusLabel {{ font-size: {fs(9)}; font-weight: 600; color: {c.copy_status_fg}; }}
+        QLabel#secondaryHeaderLabel {{ color: {c.secondary_label_fg}; font-size: {fs(10)}; font-weight: 600; }}
         QLabel#selectedDatasetValue {{
             color: {c.selected_value_fg};
-            font-size: 10pt;
+            font-size: {fs(10)};
             font-weight: 600;
             padding: 0px;
             margin: 0px;
         }}
         QLabel#selectedDatasetTitle {{
             color: {c.selected_value_fg};
-            font-size: 10pt;
+            font-size: {fs(10)};
             font-weight: 600;
             padding: 0px;
             margin: 0px;
         }}
         QLabel#selectedPanelGroupHeader {{
             color: {c.selected_value_fg};
-            font-size: 10pt;
+            font-size: {fs(10)};
             font-weight: 700;
             padding: 0px;
             margin: 0px;
         }}
         QLabel#selectedDatasetValueAuto {{
             color: {c.selected_value_auto_fg};
-            font-size: 10pt;
+            font-size: {fs(10)};
             font-weight: 600;
             padding: 0px;
             margin: 0px;
@@ -759,7 +801,7 @@ def build_stylesheet(c: ThemeColors) -> str:
             color: {selected_toggle};
             text-align: left;
             padding: 0px 0px 2px 0px;
-            font-size: 10pt;
+            font-size: {fs(10)};
             font-weight: 600;
         }}
         QPushButton#selectedPanelToggle:hover {{
@@ -772,14 +814,14 @@ def build_stylesheet(c: ThemeColors) -> str:
     """
 
 
-def apply_base_style(app: QApplication | None = None) -> None:
+def apply_base_style(app: QApplication | None = None, *, ui_scale: float | None = None) -> None:
     """Fusion style + default app font (call once at startup)."""
     target = app or QApplication.instance()
     if target is None:
         return
     target.setStyle("Fusion")
     font = QFont()
-    font.setPointSize(10)
+    font.setPointSize(font_points(10, ui_scale=ui_scale))
     target.setFont(font)
 
 
