@@ -93,7 +93,7 @@ git push origin v1.2.0
 
 The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`), on `windows-latest`. It calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.0` → tag `v1.2.0`).
 
-Pushing a tag also triggers [CI](.github/workflows/ci.yml) only when you push a **branch** (`main`); tag pushes do not re-run CI. Typical flow: push `main` (CI runs) → when green, `git tag v1.2.0 && git push origin v1.2.0` (Release runs once).
+Pushing a tag does **not** re-run CI (only branch pushes to `main` do). Typical flow: push `main` (CI runs) → when green, `git tag v1.2.0 && git push origin v1.2.0` (Release runs once). If a release failed, fix `main`, then either delete and re-push the tag (`git push origin :refs/tags/v1.2.0` then tag again) or run **Actions → Release → Run workflow** on the tag branch.
 
 ### Local build (optional)
 
