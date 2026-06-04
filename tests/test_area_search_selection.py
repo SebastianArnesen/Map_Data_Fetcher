@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from geonorge.models import AreaOption
-
 from app.main_window import _merge_area_selection_with_visible_checks
+from geonorge.models import AreaOption
 
 
 def _area(code: str) -> AreaOption:

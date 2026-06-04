@@ -11,17 +11,17 @@ from urllib.parse import quote
 
 from PySide6.QtCore import (
     QEvent,
+    QItemSelectionModel,
     QModelIndex,
     QPoint,
     QRectF,
     QSettings,
-    Signal,
     QSize,
     Qt,
-    QItemSelectionModel,
     QThreadPool,
     QTimer,
     QUrl,
+    Signal,
     Slot,
 )
 from PySide6.QtGui import (
@@ -55,32 +55,41 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QStatusBar,
     QToolButton,
     QToolTip,
     QTreeView,
     QVBoxLayout,
-    QStackedWidget,
     QWidget,
 )
-
-from geonorge.client import HttpClient
-
-# Area table column layout (checkbox | code | name).
-_AREA_CHECKBOX_COLUMN_W = 28
-_AREA_CODE_COLUMN_W = 82  # 10px narrower than before so Name sits closer to Code
-from geonorge.catalog import normalize_categories
-from geonorge.discovery import DiscoveryService
-from geonorge.models import AreaOption, AreaType, DatasetAvailability, DatasetRef, FormatOption, ProjectionOption
-from geonorge.nedlasting import NedlastingClient
-from geonorge.map_selection import geojson_url_for_map_selection_layer, infer_source_epsg
 
 from app import __version__
 from app.dialogs import themed_message_box
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
 from app.map_picker import MapPickerWidget, fetch_text, parse_geojson_grid_cells
-from app.updates import build_latest_release_web_url, fetch_latest_release, is_newer_version
+from app.models_qt import (
+    DATASET_COL_COPY,
+    DATASET_COL_LINK,
+    DATASET_COL_TAGS,
+    DATASET_COL_TITLE,
+    AreaSelectionModel,
+    CheckBoxDelegate,
+    CheckListItem,
+    ClipboardCopyWidget,
+    CopyableListView,
+    CopyableTreeView,
+    DatasetItemDelegate,
+    DatasetTreeView,
+    ExternalLinkWidget,
+    FilterListItemDelegate,
+    SimpleListModel,
+    TwoColumnListModel,
+    clear_dataset_index_widgets,
+    clear_list_index_widgets,
+    clear_tree_index_widgets,
+)
 from app.theme import (
     SHARED,
     apply_base_style,
@@ -99,29 +108,25 @@ from app.theme import (
     theme_toggle_colors,
     theme_toggle_knob_border,
 )
-from app.models_qt import (
-    DATASET_COL_COPY,
-    DATASET_COL_LINK,
-    DATASET_COL_TAGS,
-    DATASET_COL_TITLE,
-    AreaSelectionModel,
-    CheckBoxDelegate,
-    CheckListItem,
-    ClipboardCopyWidget,
-    DatasetItemDelegate,
-    ExternalLinkWidget,
-    FilterListItemDelegate,
-    SimpleListModel,
-    CopyableListView,
-    CopyableTreeView,
-    DatasetTreeView,
-    clear_dataset_index_widgets,
-    clear_list_index_widgets,
-    clear_tree_index_widgets,
-    TwoColumnListModel,
-)
 from app.tooltip_delay import cancel_pending_tooltips
+from app.updates import build_latest_release_web_url, fetch_latest_release, is_newer_version
 from app.workers import FuncWorker, connect_worker_signals
+from geonorge.client import HttpClient
+from geonorge.discovery import DiscoveryService
+from geonorge.map_selection import geojson_url_for_map_selection_layer, infer_source_epsg
+from geonorge.models import (
+    AreaOption,
+    AreaType,
+    DatasetAvailability,
+    DatasetRef,
+    FormatOption,
+    ProjectionOption,
+)
+from geonorge.nedlasting import NedlastingClient
+
+# Area table column layout (checkbox | code | name).
+_AREA_CHECKBOX_COLUMN_W = 28
+_AREA_CODE_COLUMN_W = 82  # 10px narrower than before so Name sits closer to Code
 
 logger = logging.getLogger(__name__)
 
@@ -4305,7 +4310,7 @@ class MainWindow(QMainWindow):
                         icon="warning",
                     )
                     skip_btn = msg.addButton("Skip this area", QMessageBox.RejectRole)
-                    change_btn = msg.addButton("Choose another format…", QMessageBox.AcceptRole)
+                    msg.addButton("Choose another format…", QMessageBox.AcceptRole)
                     msg.exec()
                     if msg.clickedButton() is skip_btn:
                         break

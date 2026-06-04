@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import traceback
 import logging
+import traceback
 from typing import Callable, Generic, TypeVar
 
 from PySide6.QtCore import QObject, QRunnable, Qt, Signal, Slot

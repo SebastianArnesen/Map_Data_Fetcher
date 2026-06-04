@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from geonorge.models import AreaOption, DatasetAvailability, FormatOption, ProjectionOption
-
 from app.filter_index import DatasetFilterIndex
+from geonorge.models import AreaOption, DatasetAvailability, FormatOption, ProjectionOption
 
 
 def _ds(

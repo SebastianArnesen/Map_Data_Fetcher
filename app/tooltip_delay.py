@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QEvent, QModelIndex, QObject, QPoint, QTimer, Qt
+from PySide6.QtCore import QEvent, QModelIndex, QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import QCursor, QHelpEvent
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QMenu, QToolTip, QWidget
 from shiboken6 import isValid

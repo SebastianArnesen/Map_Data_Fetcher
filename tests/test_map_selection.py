@@ -3,15 +3,8 @@ from __future__ import annotations
 import os
 
 import pytest
-
-from geonorge.map_selection import (
-    geojson_url_for_map_selection_layer,
-    infer_source_epsg,
-    normalize_grid_coordinates,
-)
-from geonorge.models import DatasetCapabilities
-
 import requests
+from PySide6.QtGui import QPainterPath
 
 from app.map_picker import (
     build_grid_cell_shapes,
@@ -19,7 +12,12 @@ from app.map_picker import (
     lonlat_to_global_px,
     parse_geojson_grid_cells,
 )
-from PySide6.QtGui import QPainterPath
+from geonorge.map_selection import (
+    geojson_url_for_map_selection_layer,
+    infer_source_epsg,
+    normalize_grid_coordinates,
+)
+from geonorge.models import DatasetCapabilities
 
 
 def test_capabilities_holds_map_selection_layer() -> None:

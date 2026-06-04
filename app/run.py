@@ -6,15 +6,15 @@ import sys
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QMessageBox
 
+from app import __version__
 from app.crash_handler import GeonorgeApplication, install_crash_handler
 from app.instance_lock import acquire_single_instance_lock, attach_single_instance_lock
-from app.windows_subprocess import install_windows_subprocess_patch
 from app.logging_config import configure_logging
-from app import __version__
 from app.main_window import MainWindow
 from app.resources import apply_app_icon
 from app.ssl_bundle import configure_ssl_bundle
 from app.tooltip_delay import enable_widget_tooltips, install_delayed_tooltips
+from app.windows_subprocess import install_windows_subprocess_patch
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

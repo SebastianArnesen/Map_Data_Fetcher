@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from geonorge.map_selection import geojson_url_for_map_selection_layer, infer_source_epsg
-
 from app.map_picker import fetch_text, parse_geojson_grid_cells
+from geonorge.map_selection import geojson_url_for_map_selection_layer, infer_source_epsg
 
 
 @pytest.mark.network

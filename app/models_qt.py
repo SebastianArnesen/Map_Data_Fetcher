@@ -10,13 +10,10 @@ from PySide6.QtGui import (
     QFont,
     QKeySequence,
     QPainter,
-    QPalette,
     QPen,
     QStandardItem,
     QStandardItemModel,
 )
-from app.theme import font_points
-
 from PySide6.QtWidgets import (
     QApplication,
     QListView,
@@ -27,11 +24,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-DATASET_COL_TITLE = 0
-DATASET_COL_COPY = 1
-DATASET_COL_TAGS = 2
-DATASET_COL_LINK = 3
-
 from app.filter_index import format_filter_key
 from app.theme import (
     DARK,
@@ -40,15 +32,21 @@ from app.theme import (
     checkbox_auto_tick_color,
     checkbox_fill_border,
     checkbox_tick_color,
-    list_selection_border_color,
     copy_hover_background,
     copy_icon_color,
     dataset_row_background,
     dataset_text_color,
     disabled_list_item_color,
+    font_points,
+    list_selection_border_color,
     qcolor,
     resolve_light_mode,
 )
+
+DATASET_COL_TITLE = 0
+DATASET_COL_COPY = 1
+DATASET_COL_TAGS = 2
+DATASET_COL_LINK = 3
 
 
 @dataclass(frozen=True)

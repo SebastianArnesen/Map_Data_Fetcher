@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .catalog import normalize_categories
 from .models import (
     AreaOption,
     DatasetAvailability,
@@ -14,7 +14,6 @@ from .models import (
     FormatOption,
     ProjectionOption,
 )
-from .catalog import normalize_categories
 
 
 def default_cache_dir() -> Path:

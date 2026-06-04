@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, QtMsgType, qInstallMessageHandler
-from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+)
 
 from app.logging_config import log_dir
 from app.theme import palette_for

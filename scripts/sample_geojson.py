@@ -1,6 +1,5 @@
 """Dev-only: fetch and summarize a GeoJSON URL (default kartkatalog host)."""
 
-import json
 import sys
 
 import requests
