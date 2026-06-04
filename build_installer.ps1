@@ -25,7 +25,9 @@ function Resolve-IsccPath {
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe",
     "C:\Program Files (x86)\Inno Setup 5\ISCC.exe",
-    "C:\Program Files\Inno Setup 5\ISCC.exe"
+    "C:\Program Files\Inno Setup 5\ISCC.exe",
+    "$env:ProgramData\chocolatey\lib\InnoSetup\tools\ISCC.exe",
+    "$env:ProgramData\chocolatey\lib\innosetup\tools\ISCC.exe"
   )
 
   foreach ($path in $candidates) {

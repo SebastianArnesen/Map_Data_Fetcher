@@ -91,7 +91,9 @@ git tag v1.2.0
 git push origin v1.2.0
 ```
 
-The [Release workflow](.github/workflows/release.yml) runs on `windows-latest`, calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.0` → tag `v1.2.0`). A tag like `v1.2.8` will fail if `app/__init__.py` still says `1.2.0`. If a release run fails, open the job log and expand the step that failed (often **Verify tag matches app version** or **Build executable**).
+The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`), on `windows-latest`. It calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.0` → tag `v1.2.0`).
+
+Pushing a tag also triggers [CI](.github/workflows/ci.yml) only when you push a **branch** (`main`); tag pushes do not re-run CI. Typical flow: push `main` (CI runs) → when green, `git tag v1.2.0 && git push origin v1.2.0` (Release runs once).
 
 ### Local build (optional)
 

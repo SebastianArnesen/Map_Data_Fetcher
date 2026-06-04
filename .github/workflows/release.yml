@@ -29,20 +29,30 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          $paths = @(
-            "${env:ProgramFiles(x86)}\Inno Setup 6",
-            "${env:ProgramFiles(x86)}\Inno Setup 7",
-            "$env:ProgramFiles\Inno Setup 6",
-            "$env:ProgramFiles\Inno Setup 7"
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+            "$env:ProgramData\chocolatey\lib\InnoSetup\tools\ISCC.exe",
+            "$env:ProgramData\chocolatey\lib\innosetup\tools\ISCC.exe"
           )
-          foreach ($dir in $paths) {
-            if (Test-Path "$dir\ISCC.exe") {
+          foreach ($iscc in $candidates) {
+            if (Test-Path $iscc) {
+              $dir = Split-Path $iscc -Parent
               echo $dir >> $env:GITHUB_PATH
-              Write-Host "Inno Setup: $dir\ISCC.exe"
+              Write-Host "Inno Setup: $iscc"
               exit 0
             }
           }
           throw "ISCC.exe not found after Inno Setup install"
+
+      - name: Verify build inputs
+        shell: pwsh
+        run: |
+          if (-not (Test-Path assets\appIcon.ico)) {
+            throw "Missing assets/appIcon.ico (must be committed for CI builds)."
+          }
 
       - name: Verify tag matches app version
         shell: pwsh
@@ -60,11 +70,21 @@ jobs:
 
       - name: Build executable
         shell: pwsh
-        run: .\build_exe.ps1
+        run: |
+          $ErrorActionPreference = "Stop"
+          .\build_exe.ps1
+          if (-not (Test-Path dist\GeonorgeDatasets.exe)) {
+            throw "PyInstaller did not produce dist\GeonorgeDatasets.exe"
+          }
 
       - name: Build installer
         shell: pwsh
-        run: .\build_installer.ps1
+        run: |
+          $ErrorActionPreference = "Stop"
+          .\build_installer.ps1
+          if (-not (Test-Path dist\GeonorgeDatasetsSetup.exe)) {
+            throw "Inno Setup did not produce dist\GeonorgeDatasetsSetup.exe"
+          }
 
       - name: Verify artifacts
         shell: pwsh
@@ -79,3 +99,4 @@ jobs:
             dist/GeonorgeDatasetsSetup.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
+          overwrite_files: true
