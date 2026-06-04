@@ -29,6 +29,7 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QDesktopServices,
+    QFont,
     QKeySequence,
     QPainter,
     QPainterPath,
@@ -674,6 +675,17 @@ class ThemeToggleSwitch(QWidget):
             self._paint_sun_icon(painter, r.right() - 15, r.center().y(), icon_pen)
 
 
+def _merge_area_selection_with_visible_checks(
+    selected: list[AreaOption],
+    *,
+    visible_codes: set[str],
+    visible_checked: list[AreaOption],
+) -> list[AreaOption]:
+    """Keep selections not shown in the filtered list; sync only visible rows."""
+    hidden = [a for a in selected if a.code not in visible_codes]
+    return hidden + visible_checked
+
+
 class MainWindow(QMainWindow):
     def __init__(self, *, profile_ui: bool = False):
         super().__init__()
@@ -798,13 +810,11 @@ class MainWindow(QMainWindow):
         toolbar_layout.addStretch(1)
         self.text_scale_group = QButtonGroup(self)
         self.text_scale_normal_button = QPushButton("A")
-        self.text_scale_normal_button.setObjectName("toolbarButton")
-        self.text_scale_normal_button.setCheckable(True)
+        self.text_scale_normal_button.setObjectName("textScaleSmallButton")
         self.text_scale_normal_button.setCursor(Qt.PointingHandCursor)
         self.text_scale_normal_button.setToolTip("Standard text size")
-        self.text_scale_large_button = QPushButton("A+")
-        self.text_scale_large_button.setObjectName("toolbarButton")
-        self.text_scale_large_button.setCheckable(True)
+        self.text_scale_large_button = QPushButton("A")
+        self.text_scale_large_button.setObjectName("textScaleLargeButton")
         self.text_scale_large_button.setCursor(Qt.PointingHandCursor)
         self.text_scale_large_button.setToolTip("Larger text and controls (recommended on macOS/Linux)")
         self.text_scale_group.addButton(self.text_scale_normal_button, 0)
@@ -1324,13 +1334,13 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         settings = QSettings("Geonorge", "Datasets")
+        light = settings.value("ui/light_mode", False, type=bool)
+        self._light_mode = bool(light)
         scale_name = str(settings.value("ui/text_scale", default_text_scale_name()) or default_text_scale_name())
         if scale_name not in ("normal", "large"):
             scale_name = default_text_scale_name()
         self._text_scale_name = "normal"
         self._apply_text_scale(scale_name, persist=False)
-        light = settings.value("ui/light_mode", False, type=bool)
-        self._light_mode = bool(light)
         self._on_theme_toggle(light, refresh_style=False)
 
     def _apply_text_scale(self, scale_name: str, *, persist: bool = True) -> None:
@@ -1341,12 +1351,36 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(build_stylesheet(palette_for(self._light_mode), ui_scale=factor))
         self._apply_scaled_widget_metrics()
         if hasattr(self, "text_scale_normal_button"):
-            self.text_scale_normal_button.setChecked(self._text_scale_name == "normal")
-            self.text_scale_large_button.setChecked(self._text_scale_name == "large")
+            self.text_scale_normal_button.setEnabled(self._text_scale_name != "normal")
+            self.text_scale_large_button.setEnabled(self._text_scale_name != "large")
         if persist:
             QSettings("Geonorge", "Datasets").setValue("ui/text_scale", self._text_scale_name)
         if hasattr(self, "dataset_view"):
             self.dataset_view.viewport().update()
+        self._apply_toolbar_fixed_fonts()
+
+    def _apply_toolbar_fixed_fonts(self) -> None:
+        """Top toolbar stays at a fixed size regardless of ui/text_scale."""
+        app = QApplication.instance()
+        base = QFont(app.font() if app is not None else QFont())
+        body = QFont(base)
+        body.setPointSize(10)
+        for attr in ("refresh_button", "reset_cache_button", "check_updates_button"):
+            button = getattr(self, attr, None)
+            if button is not None:
+                button.setFont(body)
+        small = QFont(base)
+        small.setPointSize(9)
+        large = QFont(base)
+        large.setPointSize(15)
+        if hasattr(self, "text_scale_normal_button"):
+            self.text_scale_normal_button.setText("A")
+            self.text_scale_normal_button.setFont(small)
+        if hasattr(self, "text_scale_large_button"):
+            self.text_scale_large_button.setText("A")
+            self.text_scale_large_button.setFont(large)
+        if hasattr(self, "theme_toggle"):
+            self.theme_toggle.setFont(body)
 
     def _apply_scaled_widget_metrics(self) -> None:
         search_h = scale_pixels(34, ui_scale=scale_name_to_factor(self._text_scale_name))
@@ -1863,6 +1897,29 @@ class MainWindow(QMainWindow):
         preferred = next((a for a in areas if a.code == "0000"), None)
         return [preferred] if preferred else [areas[0]]
 
+    def _visible_area_model_codes(self) -> set[str]:
+        codes: set[str] = set()
+        for row in range(self.area_model.rowCount()):
+            item = self.area_model.item(row, 0)
+            if not item:
+                continue
+            key = item.data(Qt.UserRole + 1)
+            if isinstance(key, str):
+                codes.add(key)
+        return codes
+
+    def _apply_model_checks_to_selected_areas(self) -> None:
+        visible = self._visible_area_model_codes()
+        visible_checked: list[AreaOption] = []
+        for payload in self.area_model.checked_payloads():
+            if isinstance(payload, AreaOption):
+                visible_checked.append(payload)
+        self._selected_areas = _merge_area_selection_with_visible_checks(
+            self._selected_areas,
+            visible_codes=visible,
+            visible_checked=visible_checked,
+        )
+
     def _update_area_search_row_visibility(self) -> None:
         map_open = self._area_map_is_open()
         show_list_types = self._area_type_shows_area_list(self._active_area_type())
@@ -2069,6 +2126,11 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(remove_worker, Qt.ConnectionType.QueuedConnection)
         self._map_grid_pool.start(worker)
 
+    def _wait_map_grid_workers(self, timeout_ms: int = 10_000) -> None:
+        pool = self._map_grid_pool
+        if pool is not None:
+            pool.waitForDone(timeout_ms)
+
     def _update_open_map_visibility(self) -> None:
         self._update_area_search_row_visibility()
         ds = self._selected_dataset
@@ -2118,6 +2180,7 @@ class MainWindow(QMainWindow):
         *,
         load_generation: int,
         layer_id: str,
+        source_epsg: int | None = None,
     ) -> None:
         if load_generation != self._area_map_load_generation:
             logger.debug("Ignoring stale map grid result for layer %s", layer_id)
@@ -2130,7 +2193,7 @@ class MainWindow(QMainWindow):
         if not isinstance(parsed, list):
             return
         try:
-            self.area_map_picker.apply_parsed_grid(parsed)
+            self.area_map_picker.apply_parsed_grid(parsed, source_epsg=source_epsg)
         except Exception:
             logger.exception("Failed to apply map grid for layer %s", layer_id)
             return
@@ -2149,14 +2212,20 @@ class MainWindow(QMainWindow):
         if self._recompute_running or self._recompute_timer.isActive():
             QTimer.singleShot(0, self._flush_pending_area_map_apply)
             return
-        parsed, load_generation, layer_id = pending
+        parsed, load_generation, layer_id, source_epsg = pending
         self._area_map_pending_apply = None
-        self._apply_map_grid_result(parsed, load_generation=load_generation, layer_id=layer_id)
+        self._apply_map_grid_result(
+            parsed,
+            load_generation=load_generation,
+            layer_id=layer_id,
+            source_epsg=source_epsg,
+        )
 
     def _open_area_map(self) -> None:
         if self._recompute_running or self._recompute_timer.isActive():
             self._area_map_reload_pending = True
             return
+        self._wait_map_grid_workers()
         ds = self._selected_dataset
         if not ds or self._active_area_type() != "celle" or not ds.capabilities or not ds.capabilities.map_selection_layer:
             return
@@ -2203,12 +2272,11 @@ class MainWindow(QMainWindow):
         previous_status = self.status_text.text()
         self._set_status("Loading map grid…")
 
-        def work() -> tuple[list, int, str]:
+        def work() -> tuple[list, int, str, int | None]:
             text = fetch_text(url)
             parsed = parse_geojson_grid_cells(
                 text,
                 allowed_codes=allowed_codes,
-                source_epsg=source_epsg,
             )
             if not parsed and allowed_codes:
                 logger.info(
@@ -2219,20 +2287,24 @@ class MainWindow(QMainWindow):
                 parsed = parse_geojson_grid_cells(
                     text,
                     allowed_codes=None,
-                    source_epsg=source_epsg,
                 )
-            return parsed, load_generation, layer_id
+            return parsed, load_generation, layer_id, source_epsg
 
         def on_result(payload: object) -> None:
-            if not isinstance(payload, tuple) or len(payload) != 3:
+            if not isinstance(payload, tuple) or len(payload) != 4:
                 logger.warning("Unexpected map grid worker payload: %r", payload)
                 return
-            parsed, gen, lid = payload
+            parsed, gen, lid, epsg = payload
             self._set_status(previous_status)
             if gen != self._area_map_load_generation:
                 logger.debug("Ignoring stale map grid worker result (gen %s)", gen)
                 return
-            self._apply_map_grid_result(parsed, load_generation=gen, layer_id=lid)
+            self._apply_map_grid_result(
+                parsed,
+                load_generation=gen,
+                layer_id=lid,
+                source_epsg=epsg,
+            )
 
         def on_error(err: str) -> None:
             self._on_background_task_error(str(err))
@@ -2270,6 +2342,7 @@ class MainWindow(QMainWindow):
         self._area_map_load_generation += 1
         self._area_map_reload_pending = False
         self._area_map_pending_apply = None
+        self._wait_map_grid_workers()
         self.area_map_picker.canvas.clear_basemap_tiles()
         self.area_map_picker.canvas.set_grid_cells([])
         self.area_stack.setCurrentWidget(self.area_list_section)
@@ -3111,9 +3184,10 @@ class MainWindow(QMainWindow):
         self.area_view.setCursor(Qt.ArrowCursor)
         self.area_view.viewport().setCursor(Qt.ArrowCursor)
         if preserve_selection:
-            # Prefer the live model state (avoids losing checks on sort/rebuild if
-            # a click happened while we were recomputing lists).
-            checked_keys = set(self.area_model.checked_keys()) or {a.code for a in self._selected_areas}
+            # Keep full selection; union model checks for in-flight clicks during recompute.
+            checked_keys = {a.code for a in self._selected_areas}
+            if self.area_model.rowCount():
+                checked_keys |= self.area_model.checked_keys()
         else:
             checked_keys = set()
         scroll_value = self.area_view.verticalScrollBar().value()
@@ -3589,7 +3663,7 @@ class MainWindow(QMainWindow):
         promoted_from_auto = bool(self._auto_area_codes & checked_keys)
         self._auto_areas = []
         self._auto_area_codes = set()
-        self._selected_areas = self.area_model.checked_payloads()
+        self._apply_model_checks_to_selected_areas()
         if self._promote_auto_area_type_if_user_selected_areas():
             promoted_from_auto = True
         if not self._selected_areas:
@@ -3616,7 +3690,7 @@ class MainWindow(QMainWindow):
         self.area_model.set_all_checked(target_checked)
         self._auto_areas = []
         self._auto_area_codes = set()
-        self._selected_areas = self.area_model.checked_payloads()
+        self._apply_model_checks_to_selected_areas()
         self._update_area_all_checkbox()
         self._sync_area_map_selection()
         self._reset_dataset_page()

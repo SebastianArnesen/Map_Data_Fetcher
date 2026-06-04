@@ -87,7 +87,7 @@ def test_svalbard_multipolygon_uses_separate_subpaths() -> None:
     assert url is not None
     text = requests.get(url, timeout=60).text
     parsed = parse_geojson_grid_cells(text, allowed_codes=None, source_epsg=None)
-    shapes = build_grid_cell_shapes(parsed)
+    shapes = build_grid_cell_shapes(parsed, source_epsg=None)
     cell = next(s for s in shapes if s.code == "25161")
     move_tos = sum(
         1

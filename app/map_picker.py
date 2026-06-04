@@ -303,7 +303,7 @@ def parse_geojson_grid_cells(
     allowed_codes: set[str] | None = None,
     source_epsg: int | None = None,
 ) -> list[ParsedGridCell]:
-    """Parse GeoJSON on a worker thread (no Qt widgets)."""
+    """Parse GeoJSON (no Qt widgets). Does not reproject; use build_grid_cell_shapes on the GUI thread."""
     try:
         data = json.loads(geojson_text)
     except Exception:
@@ -329,8 +329,6 @@ def parse_geojson_grid_cells(
         if allowed and code not in allowed:
             continue
         rings = _iter_polygon_rings(geom)
-        if rings and source_epsg and _rings_look_projected(rings):
-            rings = _reproject_rings_to_wgs84(rings, source_epsg=source_epsg)
         if not rings:
             continue
         frozen_rings = tuple(tuple(ring) for ring in rings)
@@ -338,10 +336,16 @@ def parse_geojson_grid_cells(
     return out
 
 
-def build_grid_cell_shapes(parsed: list[ParsedGridCell]) -> list[GridCellShape]:
+def build_grid_cell_shapes(
+    parsed: list[ParsedGridCell],
+    *,
+    source_epsg: int | None = None,
+) -> list[GridCellShape]:
     out: list[GridCellShape] = []
     for item in parsed:
         rings = [list(ring) for ring in item.rings]
+        if rings and source_epsg and _rings_look_projected(rings):
+            rings = _reproject_rings_to_wgs84(rings, source_epsg=source_epsg)
         built = _build_path_for_rings(rings)
         if not built:
             continue
@@ -727,12 +731,17 @@ class MapPickerWidget(QWidget):
 
         self.canvas.toggled.connect(self.toggled)
 
-    def apply_parsed_grid(self, parsed: list[ParsedGridCell]) -> None:
+    def apply_parsed_grid(
+        self,
+        parsed: list[ParsedGridCell],
+        *,
+        source_epsg: int | None = None,
+    ) -> None:
         canvas = self.canvas
         canvas.setUpdatesEnabled(False)
         try:
             try:
-                shapes = build_grid_cell_shapes(parsed)
+                shapes = build_grid_cell_shapes(parsed, source_epsg=source_epsg)
             except Exception:
                 logger.exception("Failed to build map grid shapes")
                 shapes = []
@@ -753,9 +762,8 @@ class MapPickerWidget(QWidget):
         parsed = parse_geojson_grid_cells(
             geojson_text,
             allowed_codes=allowed_codes,
-            source_epsg=source_epsg,
         )
-        self.apply_parsed_grid(parsed)
+        self.apply_parsed_grid(parsed, source_epsg=source_epsg)
 
     def fit_to_grid(self) -> None:
         cells = list(self.canvas._grid_cells.values())

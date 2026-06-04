@@ -530,6 +530,25 @@ def build_stylesheet(c: ThemeColors, *, ui_scale: float | None = None) -> str:
         }}
         QPushButton#areaHeaderButton:pressed {{ background: {c.list_selected_bg}; }}
         {_button_block("QPushButton#toolbarButton", c)}
+        QPushButton#toolbarButton {{
+            font-size: 10pt;
+        }}
+        {_button_block("QPushButton#textScaleSmallButton", c, padding="0px 6px")}
+        QPushButton#textScaleSmallButton {{
+            font-size: 9pt;
+            min-width: 28px;
+            max-width: 28px;
+            min-height: 28px;
+            max-height: 28px;
+        }}
+        {_button_block("QPushButton#textScaleLargeButton", c, padding="0px 6px")}
+        QPushButton#textScaleLargeButton {{
+            font-size: 15pt;
+            min-width: 28px;
+            max-width: 28px;
+            min-height: 28px;
+            max-height: 28px;
+        }}
         QLineEdit#datasetSearch, QLineEdit#areaSearch {{
             background: {c.input_bg};
             color: {c.window_fg};
