@@ -2409,24 +2409,25 @@ class MainWindow(QMainWindow):
                 self._set_status(f"Update available: v{latest}")
                 box = themed_message_box(
                     self,
-                    "Update available",
-                    f"Current version: v{__version__}\nLatest version: v{latest}\n\nOpen the download page?",
-                    light_mode=self._light_mode,
-                    icon=QMessageBox.Information,
-                    buttons=QMessageBox.Yes | QMessageBox.No,
+                    title="Update available",
+                    text=(
+                        f"Current version: v{__version__}\n"
+                        f"Latest version: v{latest}\n\n"
+                        "Open the download page?"
+                    ),
                 )
+                box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
                 if box.exec() == QMessageBox.Yes:
                     QDesktopServices.openUrl(QUrl(info.release_url))
             else:
                 self._set_status(f"Up to date (v{__version__})")
-                themed_message_box(
+                box = themed_message_box(
                     self,
-                    "No updates",
-                    f"You're on the latest version (v{__version__}).",
-                    light_mode=self._light_mode,
-                    icon=QMessageBox.Information,
-                    buttons=QMessageBox.Ok,
-                ).exec()
+                    title="No updates",
+                    text=f"You're on the latest version (v{__version__}).",
+                )
+                box.setStandardButtons(QMessageBox.Ok)
+                box.exec()
 
         def on_error(err) -> None:
             self.check_updates_button.setEnabled(True)
@@ -2444,29 +2445,30 @@ class MainWindow(QMainWindow):
                     )
                 box = themed_message_box(
                     self,
-                    "Couldn't check for updates",
-                    "GitHub returned 404 for the latest release endpoint."
-                    "\n\nPossible reasons:"
-                    "\n- The repo is private (unauthenticated requests return 404)"
-                    "\n- There is no published (non–pre-release) release"
-                    "\n- Owner/repo name is wrong"
-                    f"{extra}\n\nOpen the Releases page in your browser?",
-                    light_mode=self._light_mode,
-                    icon=QMessageBox.Warning,
-                    buttons=QMessageBox.Yes | QMessageBox.No,
+                    title="Couldn't check for updates",
+                    text=(
+                        "GitHub returned 404 for the latest release endpoint."
+                        "\n\nPossible reasons:"
+                        "\n- The repo is private (unauthenticated requests return 404)"
+                        "\n- There is no published (non–pre-release) release"
+                        "\n- Owner/repo name is wrong"
+                        f"{extra}\n\nOpen the Releases page in your browser?"
+                    ),
+                    icon="warning",
                 )
+                box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
                 if box.exec() == QMessageBox.Yes:
                     QDesktopServices.openUrl(QUrl(build_latest_release_web_url(owner=owner, repo=repo)))
                 return
 
-            themed_message_box(
+            box = themed_message_box(
                 self,
-                "Couldn't check for updates",
-                "The update check failed.\n\nDetails:\n" + details,
-                light_mode=self._light_mode,
-                icon=QMessageBox.Warning,
-                buttons=QMessageBox.Ok,
-            ).exec()
+                title="Couldn't check for updates",
+                text="The update check failed.\n\nDetails:\n" + details,
+                icon="warning",
+            )
+            box.setStandardButtons(QMessageBox.Ok)
+            box.exec()
 
         connect_worker_signals(worker, result=on_result, error=on_error)
         self._start_worker(worker)

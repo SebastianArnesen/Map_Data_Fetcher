@@ -7,7 +7,7 @@
 #define AppExeName "GeonorgeDatasets.exe"
 #define AppPublisher "Sebastian Arnesen"
 #define AppURL "https://github.com/SebastianArnesen/Map_Data_Fetcher"
-#define AppVersion "1.2.1"
+#define AppVersion "1.2.2"
 
 [Setup]
 AppId={{8C7B1C4A-7D4A-4E9C-9D0A-9F3C6A58E2C1}
