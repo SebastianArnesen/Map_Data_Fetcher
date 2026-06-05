@@ -78,6 +78,14 @@ powershell -ExecutionPolicy Bypass -File .\build_debug_exe.ps1
 
 Output: `dist\GeonorgeDatasetsDebug.exe`
 
+## Install (Windows)
+
+Download `GeonorgeDatasetsSetup.exe` from [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
+
+**Windows SmartScreen:** The installer is not code-signed (no paid certificate), so Windows may show *“Windows protected your PC”* with **Unknown publisher**. That is normal for unsigned open-source software. Click **Run anyway** to continue — the file comes from this repository’s GitHub Actions build.
+
+You can also run `GeonorgeDatasets.exe` directly without installing (portable).
+
 ## Release checklist (Windows)
 
 ### GitHub Actions (recommended)
@@ -87,13 +95,13 @@ Output: `dist\GeonorgeDatasetsDebug.exe`
 3. Tag must match the version with a `v` prefix, then push the tag:
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
-The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`), on `windows-latest`. It calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.0` → tag `v1.2.0`).
+The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`), on `windows-latest`. It calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.1` → tag `v1.2.1`).
 
-Pushing a tag does **not** re-run CI (only branch pushes to `main` do). Typical flow: push `main` (CI runs) → when green, `git tag v1.2.0 && git push origin v1.2.0` (Release runs once). If a release failed, fix `main`, then delete and re-push the tag (`git push origin :refs/tags/v1.2.0` then tag again) or run **Actions → Release → Run workflow** with ref `**v1.2.0`**.
+Pushing a tag does **not** re-run CI (only branch pushes to `main` do). Typical flow: push `main` (CI runs) → when green, `git tag v1.2.1 && git push origin v1.2.1` (Release runs once). If a release failed, fix `main`, then delete and re-push the tag (`git push origin :refs/tags/v1.2.1` then tag again) or run **Actions → Release → Run workflow** with ref `v1.2.1`.
 
 ### Local build (optional)
 
