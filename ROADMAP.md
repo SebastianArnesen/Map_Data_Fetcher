@@ -14,23 +14,23 @@
 #### Phase 2 — Platform polish
 
 - [ ] Crash restart: detect frozen app on macOS/Linux (not only `.exe`)
-- [ ] App icon: `.icns` / `.png` on macOS/Linux; keep `.ico` on Windows
+- [x] App icon: `.icns` / `.png` on macOS/Linux; keep `.ico` on Windows
 - [ ] Window startup: review `showMaximized()` on macOS
 - [ ] Map fetch: use `ca_bundle_path()` in `map_picker.fetch_text`
 
 #### Phase 3 — Packaging
 
-- [ ] Portable PyInstaller spec paths (no Windows-only backslashes)
-- [ ] `build_exe.sh` (or shared build script) for macOS and Linux
-- [ ] macOS: `.app` bundle, code sign, notarize, `.dmg`
-- [ ] Linux: onedir or AppImage (`.deb` optional)
+- [x] Portable PyInstaller spec paths (no Windows-only backslashes)
+- [x] `build_exe.sh` (or shared build script) for macOS and Linux
+- [x] macOS: `.app` bundle, `.dmg` (code sign / notarize optional)
+- [x] Linux: onedir tarball (AppImage / `.deb` optional later)
 - [ ] Keep Inno Setup Windows-only
 
 #### Phase 4 — CI and releases
 
-- [ ] GitHub Actions matrix: `windows-latest`, `macos-latest`, `ubuntu-latest`
+- [x] GitHub Actions matrix: `windows-latest`, `macos-latest`, `ubuntu-latest`
 - [ ] Tests + ruff + compileall on all three
-- [ ] Optional: PyInstaller artifacts on release tags
+- [x] PyInstaller artifacts on release tags
 
 ---
 

@@ -21,9 +21,13 @@ def asset_path(filename: str) -> Path:
 
 
 def load_app_icon() -> QIcon:
-    path = asset_path("appIcon.ico")
-    if path.is_file():
-        return QIcon(str(path))
+    for filename in ("appIcon.ico", "appIcon.png", "appIcon.icns"):
+        path = asset_path(filename)
+        if not path.is_file():
+            continue
+        icon = QIcon(str(path))
+        if not icon.isNull():
+            return icon
     return QIcon()
 
 

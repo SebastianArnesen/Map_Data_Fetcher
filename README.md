@@ -78,15 +78,52 @@ powershell -ExecutionPolicy Bypass -File .\build_debug_exe.ps1
 
 Output: `dist\GeonorgeDatasetsDebug.exe`
 
-## Install (Windows)
+## Install
 
-Download `GeonorgeDatasetsSetup.exe` from [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
+Download the build for your OS from [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
+
+### Windows
+
+- **Installer:** `GeonorgeDatasetsSetup.exe`
+- **Portable:** `GeonorgeDatasets.exe` (no install step)
 
 **Windows SmartScreen:** The installer is not code-signed (no paid certificate), so Windows may show *“Windows protected your PC”* with **Unknown publisher**. That is normal for unsigned open-source software. Click **Run anyway** to continue — the file comes from this repository’s GitHub Actions build.
 
-You can also run `GeonorgeDatasets.exe` directly without installing (portable).
+### macOS
 
-## Release checklist (Windows)
+- **Installer-style:** `GeonorgeDatasets.dmg` — open the DMG, drag **Geonorge Datasets** to **Applications**
+- The app is not notarized or code-signed, so macOS Gatekeeper may block the first launch. Right-click the app → **Open**, or allow it in **System Settings → Privacy & Security**.
+
+### Linux
+
+- **Portable:** `GeonorgeDatasets-<version>-linux-<arch>.tar.gz`
+- Extract and run the binary inside the `GeonorgeDatasets/` folder:
+
+```bash
+tar -xzf GeonorgeDatasets-1.2.3-linux-x86_64.tar.gz
+./GeonorgeDatasets/GeonorgeDatasets
+```
+
+Built on Ubuntu (GitHub `ubuntu-latest`); glibc must be new enough for that runner (typical on current Debian/Ubuntu/Fedora). Install Qt/X11 libs if the binary complains about missing `libxcb` or similar.
+
+## Build macOS / Linux executable
+
+Requires **Python 3.11+** and PyInstaller (see `requirements-dev.txt`).
+
+```bash
+pip install -r requirements-dev.txt
+chmod +x build_exe.sh
+./build_exe.sh
+```
+
+Output:
+
+- **macOS:** `dist/GeonorgeDatasets.app` and `dist/GeonorgeDatasets.dmg`
+- **Linux:** `dist/GeonorgeDatasets/` and `dist/GeonorgeDatasets-<version>-linux-<arch>.tar.gz`
+
+Place the app icon at `assets/appIcon.ico` before building (used for window icons; macOS bundle icons are generated as `.icns` during the build).
+
+## Release checklist
 
 ### GitHub Actions (recommended)
 
@@ -99,7 +136,15 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`), on `windows-latest`. It calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.3` → tag `v1.2.3`).
+The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`). It builds on **Windows, macOS, and Linux** in parallel, then publishes all artifacts to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases):
+
+| OS | Files |
+| --- | --- |
+| Windows | `GeonorgeDatasets.exe`, `GeonorgeDatasetsSetup.exe` |
+| macOS | `GeonorgeDatasets.dmg` |
+| Linux | `GeonorgeDatasets-<version>-linux-<arch>.tar.gz` |
+
+The tag name **must** equal `v` + `__version__` (e.g. app `1.2.3` → tag `v1.2.3`).
 
 Pushing a tag does **not** re-run CI (only branch pushes to `main` do). Typical flow: push `main` (CI runs) → when green, `git tag v1.2.3 && git push origin v1.2.3` (Release runs once). If a release failed, fix `main`, then delete and re-push the tag (`git push origin :refs/tags/v1.2.3` then tag again) or run **Actions → Release → Run workflow** with ref `v1.2.3`.
 
