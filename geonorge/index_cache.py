@@ -30,6 +30,16 @@ def _needs_area_reenrich(ds: DatasetAvailability) -> bool:
     return bool(caps and caps.supports_area_selection and not ds.areas_by_type)
 
 
+def _needs_capabilities_reenrich(ds: DatasetAvailability) -> bool:
+    """Re-fetch Nedlasting capabilities when the cache predates map_selection_layer."""
+    if ds.enrichment_version >= ENRICHMENT_VERSION:
+        return False
+    caps = ds.capabilities
+    if not caps or not caps.supports_area_selection:
+        return False
+    return "celle" in ds.area_types
+
+
 class DatasetIndex:
     def __init__(self, path: Path | None = None):
         self.path = path or index_file_path()
@@ -159,15 +169,7 @@ class DatasetIndex:
                 """,
                 (
                     ds.catalog_metadata_updated,
-                    (
-                        ds.enrichment_version
-                        if ds.enrichment_version >= ENRICHMENT_VERSION
-                        else (
-                            ENRICHMENT_VERSION
-                            if ds.enriched and ds.catalog_metadata_updated
-                            else 0
-                        )
-                    ),
+                    int(ds.enrichment_version or 0),
                     ds.download_api_base,
                     _download_service_flag(ds),
                     uuid,
@@ -266,6 +268,8 @@ class DatasetIndex:
             except Exception:
                 continue
             if _needs_area_reenrich(ds):
+                continue
+            if _needs_capabilities_reenrich(ds):
                 continue
             out.add(str(uuid))
         return out

@@ -1,5 +1,6 @@
 # Bump when cached enrichment payload shape changes and rows must be rebuilt once.
-ENRICHMENT_VERSION = 3
+# v4: capabilities.map_selection_layer (Open map button for Cell areas).
+ENRICHMENT_VERSION = 4
 
 # Background enrichment: modest parallelism to stay polite to Geonorge APIs.
 ENRICH_MAX_WORKERS = 5

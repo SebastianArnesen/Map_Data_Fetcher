@@ -2,7 +2,7 @@
 
 Desktop app for browsing and downloading map datasets from [Geonorge](https://www.geonorge.no/).
 
-Current version: **1.2.3** (see `app/__init__.py`).
+Current version: **1.2.8** (see `app/__init__.py`).
 
 ## License
 
@@ -115,6 +115,8 @@ xattr -dr com.apple.quarantine /Applications/GeonorgeDatasets.app
 ```
 
 **App bounces in the Dock and exits?** Check `~/Library/Application Support/GeonorgeDatasets/app.log` and `crash_reports/latest.txt`. That usually means a bad download/architecture mismatch or an older broken build — grab the latest `*-macos-x86_64.dmg` (Intel) or `*-macos-arm64.dmg` (Apple Silicon) from [Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
+
+**“Open map” missing for Cell areas (Windows/macOS)?** The app only shows it when the dataset supports map-based cell selection. If you upgraded from an older build, click **Reset cache** once (toolbar) so capabilities are re-fetched, or install a release built after enrichment version 4.
 
 ### Linux
 

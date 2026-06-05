@@ -9,7 +9,7 @@ from typing import Callable
 from .catalog import KartkatalogCatalog
 from .client import HttpClient
 from .constants import ENRICH_BATCH_SIZE, ENRICH_MAX_WORKERS, ENRICH_PROGRESS_INTERVAL, ENRICHMENT_VERSION
-from .index_cache import DatasetIndex
+from .index_cache import DatasetIndex, _needs_capabilities_reenrich
 from .models import DatasetAvailability, DatasetRef
 from .nedlasting import NedlastingClient
 
@@ -309,6 +309,8 @@ def _can_skip_nedlasting(cached: DatasetAvailability, metadata_updated: str | No
     if metadata_updated != cached.catalog_metadata_updated:
         return False
     if _needs_area_reenrich(cached):
+        return False
+    if _needs_capabilities_reenrich(cached):
         return False
     return True
 
