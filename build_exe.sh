@@ -51,6 +51,22 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "Expected dist/GeonorgeDatasets.app after PyInstaller build." >&2
     exit 1
   fi
+
+  app="dist/GeonorgeDatasets.app"
+  main_bin="$app/Contents/MacOS/GeonorgeDatasets"
+  echo "Main binary:"
+  file "$main_bin"
+  if [[ "$(file -b "$main_bin")" != *"${MACOS_TARGET_ARCH}"* ]]; then
+    echo "Expected main binary architecture ${MACOS_TARGET_ARCH}." >&2
+    exit 1
+  fi
+
+  # Ad-hoc sign so Gatekeeper and the loader accept nested Qt/pyproj libraries.
+  while IFS= read -r -d '' f; do
+    codesign --force --sign - "$f" >/dev/null 2>&1 || true
+  done < <(find "$app" -type f \( -name "*.dylib" -o -name "*.so" -o -perm -111 \) -print0)
+  codesign --force --deep --sign - "$app"
+
   version="$(run_python -c 'from app import __version__; print(__version__)')"
   dmg="dist/GeonorgeDatasets-${version}-macos-${MACOS_TARGET_ARCH}.dmg"
   DMG_OUTPUT="$dmg" bash build_dmg.sh

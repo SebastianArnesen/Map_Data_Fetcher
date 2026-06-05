@@ -102,7 +102,17 @@ Not sure? **Apple menu → About This Mac** — “Chip” means Apple Silicon; 
 
 Open the DMG and drag **Geonorge Datasets** to **Applications**. If you see *“not supported on this Mac”*, you downloaded the wrong architecture DMG.
 
-The app is not notarized or code-signed, so macOS Gatekeeper may block the first launch. Right-click the app → **Open**, or allow it in **System Settings → Privacy & Security**.
+The app is not Apple-notarized (no paid developer certificate). That is normal for unsigned open-source builds:
+
+1. **Double-click** may show a warning with only **OK** — use step 2 instead.
+2. **Right-click** the app → **Open** → **Open** in the dialog (one-time bypass).
+3. If macOS still refuses after download, clear quarantine in Terminal:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/GeonorgeDatasets.app
+```
+
+**App bounces in the Dock and exits?** Check `~/Library/Application Support/GeonorgeDatasets/app.log` and `crash_reports/latest.txt`. That usually means a bad download/architecture mismatch or an older broken build — grab the latest `*-macos-x86_64.dmg` (Intel) or `*-macos-arm64.dmg` (Apple Silicon) from [Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
 
 ### Linux
 
