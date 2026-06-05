@@ -53,7 +53,26 @@ def test_satellittbilder_100kmruter_default_url() -> None:
 def test_raster_n250_default_url() -> None:
     url = geojson_url_for_map_selection_layer("raster-n250")
     assert url is not None
-    assert url.endswith("/raster/n250.geojson")
+    assert url.endswith("/raster/n250_ny.geojson")
+
+
+def test_dtm_sjo_25_default_url() -> None:
+    url = geojson_url_for_map_selection_layer("dtm-sjo-25")
+    assert url is not None
+    assert url.endswith("/sjo/celler/dtm_25m.json")
+
+
+def test_dtm_sjo_5_and_50_default_urls() -> None:
+    u5 = geojson_url_for_map_selection_layer("dtm-sjo-5")
+    u50 = geojson_url_for_map_selection_layer("dtm-sjo-50")
+    assert u5 is not None and u5.endswith("/sjo/celler/dtm_05m.json")
+    assert u50 is not None and u50.endswith("/sjo/celler/dtm_50m.json")
+
+
+def test_dybdedata_50m_default_url() -> None:
+    url = geojson_url_for_map_selection_layer("dybdedata_50m")
+    assert url is not None
+    assert url.endswith("/json/norge/dybdedata_50m.geojson")
 
 
 def test_infer_source_epsg_from_layer_and_projection() -> None:
@@ -62,8 +81,11 @@ def test_infer_source_epsg_from_layer_and_projection() -> None:
     assert infer_source_epsg(layer_id="dtm-svalbard", projection_code="25833") is None
     assert infer_source_epsg(layer_id=None, projection_code="25833") == 25833
     assert infer_source_epsg(layer_id="raster-n250", projection_code=None) == 25833
-    assert infer_source_epsg(layer_id="raster-32", projection_code=None) == 25832
+    assert infer_source_epsg(layer_id="raster-32", projection_code=None) == 25833
+    assert infer_source_epsg(layer_id="raster-35", projection_code="25835") == 25833
     assert infer_source_epsg(layer_id="Satellittbilder-100kmruter-utm33", projection_code=None) == 25833
+    assert infer_source_epsg(layer_id="dtm-sjo-25", projection_code=None) == 4326
+    assert infer_source_epsg(layer_id="dtm-sjo-50", projection_code=None) == 25833
 
 
 def test_normalize_grid_coordinates_passthrough() -> None:

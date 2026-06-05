@@ -2242,21 +2242,24 @@ class MainWindow(QMainWindow):
 
         url = geojson_url_for_map_selection_layer(layer_id)
         if not url:
-            layer = ds.capabilities.map_selection_layer
-            themed_message_box(
+            box = themed_message_box(
                 self,
-                title="Map not available",
-                text=f"No built-in GeoJSON URL for map layer “{layer}”.",
-                informative_text=(
-                    "Geonorge does not publish a stable public filename for this layer id. "
-                    "On kartkatalog.geonorge.no/nedlasting → Velg fra kartblad, open a .geojson/.json "
-                    "request, click Response, and search for a cell code you know from the area list "
-                    "(e.g. 6404-1). Copy that request’s URL and set:\n"
-                    f"- GEONORGE_MAPSELECTION_LAYER_URL_{layer.upper().replace('-', '_')}\n"
-                    "- or GEONORGE_MAPSELECTION_GEOJSON_URL (global override)"
+                title="Map not found",
+                text=(
+                    f"Could not find map for {ds.title}.\n\n"
+                    "Alternative:\n"
+                    'Open dataset in browser, click "Last ned" (Download), go to '
+                    "https://kartkatalog.geonorge.no/nedlasting, -> "
+                    '"Geografisk område" -> "Velg fra kartblad".'
                 ),
                 icon="warning",
-            ).exec()
+            )
+            box.addButton("Close", QMessageBox.RejectRole)
+            open_btn = box.addButton("Open in browser", QMessageBox.AcceptRole)
+            box.setDefaultButton(open_btn)
+            box.exec()
+            if box.clickedButton() is open_btn:
+                self._open_dataset_in_browser(ds)
             return
 
         self.area_map_picker.canvas.set_dark_basemap(not self._light_mode)

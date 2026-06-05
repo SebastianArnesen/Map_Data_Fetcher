@@ -2,7 +2,7 @@
 
 Desktop app for browsing and downloading map datasets from [Geonorge](https://www.geonorge.no/).
 
-Current version: **1.2.2** (see `app/__init__.py`).
+Current version: **1.2.3** (see `app/__init__.py`).
 
 ## License
 
@@ -95,13 +95,13 @@ You can also run `GeonorgeDatasets.exe` directly without installing (portable).
 3. Tag must match the version with a `v` prefix, then push the tag:
 
 ```bash
-git tag v1.2.2
-git push origin v1.2.2
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
-The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`), on `windows-latest`. It calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.2` → tag `v1.2.2`).
+The [Release workflow](.github/workflows/release.yml) runs when you **push a version tag** (`v*`), on `windows-latest`. It calls the same `build_exe.ps1` and `build_installer.ps1` scripts as local builds, and publishes `GeonorgeDatasets.exe` plus `GeonorgeDatasetsSetup.exe` to [GitHub Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases). The tag name **must** equal `v` + `__version__` (e.g. app `1.2.3` → tag `v1.2.3`).
 
-Pushing a tag does **not** re-run CI (only branch pushes to `main` do). Typical flow: push `main` (CI runs) → when green, `git tag v1.2.2 && git push origin v1.2.2` (Release runs once). If a release failed, fix `main`, then delete and re-push the tag (`git push origin :refs/tags/v1.2.2` then tag again) or run **Actions → Release → Run workflow** with ref `v1.2.2`.
+Pushing a tag does **not** re-run CI (only branch pushes to `main` do). Typical flow: push `main` (CI runs) → when green, `git tag v1.2.3 && git push origin v1.2.3` (Release runs once). If a release failed, fix `main`, then delete and re-push the tag (`git push origin :refs/tags/v1.2.3` then tag again) or run **Actions → Release → Run workflow** with ref `v1.2.3`.
 
 ### Local build (optional)
 
