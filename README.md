@@ -102,6 +102,8 @@ Not sure? **Apple menu → About This Mac** — “Chip” means Apple Silicon; 
 
 Open the DMG and drag **Geonorge Datasets** to **Applications**. If you see *“not supported on this Mac”*, you downloaded the wrong architecture DMG.
 
+**Requires macOS 12 Monterey or later.** Release builds use Qt 6.9 (PySide6 below 6.10) so they run on Monterey; if you see *“Qt requires macOS 13.0.0 or later”*, you have an older release built with a too-new Qt — install the latest DMG from [Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
+
 The app is not Apple-notarized (no paid developer certificate). That is normal for unsigned open-source builds:
 
 1. **Double-click** may show a warning with only **OK** — use step 2 instead.
@@ -132,6 +134,8 @@ Requires **Python 3.11+** and PyInstaller (see `requirements-dev.txt`).
 
 ```bash
 pip install -r requirements-dev.txt
+# macOS release builds: use Qt 6.9 so the .app runs on macOS 12+
+pip install -r requirements-macos-build.txt
 chmod +x build_exe.sh
 ./build_exe.sh
 ```

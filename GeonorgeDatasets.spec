@@ -125,7 +125,7 @@ elif IS_MAC:
         info_plist={
             "NSHighResolutionCapable": "True",
             "CFBundleShortVersionString": APP_VERSION,
-            "LSMinimumSystemVersion": "10.15",
+            "LSMinimumSystemVersion": "12.0",
         },
     )
 else:
