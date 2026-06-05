@@ -21,8 +21,13 @@ jobs:
               dist/GeonorgeDatasets.exe
               dist/GeonorgeDatasetsSetup.exe
           - os: macos-latest
-            artifact_name: macos
-            upload_glob: dist/GeonorgeDatasets.dmg
+            artifact_name: macos-arm64
+            mac_arch: arm64
+            upload_glob: dist/GeonorgeDatasets-*-macos-arm64.dmg
+          - os: macos-latest
+            artifact_name: macos-x86_64
+            mac_arch: x86_64
+            upload_glob: dist/GeonorgeDatasets-*-macos-x86_64.dmg
           - os: ubuntu-latest
             artifact_name: linux
             upload_glob: dist/GeonorgeDatasets-*-linux-*.tar.gz
@@ -41,10 +46,18 @@ jobs:
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libproj-dev
 
       - name: Install dependencies
+        if: runner.os != 'macOS' || matrix.mac_arch != 'x86_64'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install "pyinstaller>=6.20.0"
+
+      - name: Install dependencies (macOS x86_64)
+        if: runner.os == 'macOS' && matrix.mac_arch == 'x86_64'
+        run: |
+          arch -x86_64 python -m pip install --upgrade pip
+          arch -x86_64 pip install -r requirements.txt
+          arch -x86_64 pip install "pyinstaller>=6.20.0"
 
       - name: Install Inno Setup
         if: runner.os == 'Windows'
@@ -64,10 +77,13 @@ jobs:
 
       - name: Build macOS app and DMG
         if: runner.os == 'macOS'
+        env:
+          MACOS_TARGET_ARCH: ${{ matrix.mac_arch }}
         run: |
           chmod +x build_exe.sh build_dmg.sh
           ./build_exe.sh
-          ls -lh dist/GeonorgeDatasets.app dist/GeonorgeDatasets.dmg
+          ls -lh dist/GeonorgeDatasets.app dist/GeonorgeDatasets-*-macos-*.dmg
+          file dist/GeonorgeDatasets.app/Contents/MacOS/GeonorgeDatasets
 
       - name: Build Linux tarball
         if: runner.os == 'Linux'

@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 import re
 import sys
 from pathlib import Path
@@ -15,6 +16,9 @@ APP_VERSION = _version_match.group(1) if _version_match else "0.0.0"
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform == "linux"
+
+_mac_target = os.environ.get("MACOS_TARGET_ARCH", "").strip()
+TARGET_ARCH = _mac_target if IS_MAC and _mac_target in ("arm64", "x86_64", "universal2") else None
 
 datas: list[tuple[str, str]] = []
 for name in ("appIcon.ico", "appIcon.png", "appIcon.icns"):
@@ -44,6 +48,7 @@ a = Analysis(
     excludes=[],
     noarchive=False,
     optimize=1,
+    target_arch=TARGET_ARCH,
 )
 pyz = PYZ(a.pure)
 
@@ -61,7 +66,7 @@ if IS_LINUX:
         console=False,
         disable_windowed_traceback=False,
         argv_emulation=False,
-        target_arch=None,
+        target_arch=TARGET_ARCH,
         codesign_identity=None,
         entitlements_file=None,
     )
@@ -91,7 +96,7 @@ else:
         console=False,
         disable_windowed_traceback=False,
         argv_emulation=IS_MAC,
-        target_arch=None,
+        target_arch=TARGET_ARCH,
         codesign_identity=None,
         entitlements_file=None,
         icon=icon_path,

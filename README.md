@@ -91,8 +91,18 @@ Download the build for your OS from [GitHub Releases](https://github.com/Sebasti
 
 ### macOS
 
-- **Installer-style:** `GeonorgeDatasets.dmg` — open the DMG, drag **Geonorge Datasets** to **Applications**
-- The app is not notarized or code-signed, so macOS Gatekeeper may block the first launch. Right-click the app → **Open**, or allow it in **System Settings → Privacy & Security**.
+Download the DMG that matches your Mac:
+
+| Mac type | File |
+| --- | --- |
+| Apple Silicon (M1/M2/M3/M4) | `GeonorgeDatasets-<version>-macos-arm64.dmg` |
+| Intel | `GeonorgeDatasets-<version>-macos-x86_64.dmg` |
+
+Not sure? **Apple menu → About This Mac** — “Chip” means Apple Silicon; “Processor” with Intel in the name means x86_64.
+
+Open the DMG and drag **Geonorge Datasets** to **Applications**. If you see *“not supported on this Mac”*, you downloaded the wrong architecture DMG.
+
+The app is not notarized or code-signed, so macOS Gatekeeper may block the first launch. Right-click the app → **Open**, or allow it in **System Settings → Privacy & Security**.
 
 ### Linux
 
@@ -118,7 +128,7 @@ chmod +x build_exe.sh
 
 Output:
 
-- **macOS:** `dist/GeonorgeDatasets.app` and `dist/GeonorgeDatasets.dmg`
+- **macOS:** `dist/GeonorgeDatasets.app` and `dist/GeonorgeDatasets-<version>-macos-<arch>.dmg` (`<arch>` is `arm64` or `x86_64`)
 - **Linux:** `dist/GeonorgeDatasets/` and `dist/GeonorgeDatasets-<version>-linux-<arch>.tar.gz`
 
 Place the app icon at `assets/appIcon.ico` before building (used for window icons; macOS bundle icons are generated as `.icns` during the build).
@@ -141,7 +151,7 @@ The [Release workflow](.github/workflows/release.yml) runs when you **push a ver
 | OS | Files |
 | --- | --- |
 | Windows | `GeonorgeDatasets.exe`, `GeonorgeDatasetsSetup.exe` |
-| macOS | `GeonorgeDatasets.dmg` |
+| macOS | `GeonorgeDatasets-<version>-macos-arm64.dmg`, `GeonorgeDatasets-<version>-macos-x86_64.dmg` |
 | Linux | `GeonorgeDatasets-<version>-linux-<arch>.tar.gz` |
 
 The tag name **must** equal `v` + `__version__` (e.g. app `1.2.3` → tag `v1.2.3`).

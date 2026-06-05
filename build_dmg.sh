@@ -11,7 +11,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 app="dist/GeonorgeDatasets.app"
-dmg="dist/GeonorgeDatasets.dmg"
+dmg="${DMG_OUTPUT:-dist/GeonorgeDatasets.dmg}"
 staging="dist/dmg-staging"
 
 if [[ ! -d "$app" ]]; then
