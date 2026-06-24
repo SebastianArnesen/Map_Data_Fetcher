@@ -10,7 +10,8 @@ from .catalog import KartkatalogCatalog
 from .client import HttpClient
 from .constants import ENRICH_BATCH_SIZE, ENRICH_MAX_WORKERS, ENRICH_PROGRESS_INTERVAL, ENRICHMENT_VERSION
 from .index_cache import DatasetIndex, _needs_capabilities_reenrich
-from .models import DatasetAvailability, DatasetRef
+from .map_selection import infer_map_selection_layer
+from .models import DatasetAvailability, DatasetCapabilities, DatasetRef
 from .nedlasting import NedlastingClient
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,11 @@ class DiscoveryService:
             logger.debug("Enriching %s (%s)", d.title, d.metadata_uuid)
             d.download_api_base = download_api_base
             caps = self.nedlasting.capabilities(d.metadata_uuid, base_url=d.download_api_base)
-            d.capabilities = caps
+            d.capabilities = _patch_map_selection_layer(
+                caps,
+                title=d.title,
+                metadata_uuid=d.metadata_uuid,
+            )
             if caps and caps.supports_area_selection:
                 areas_by_type = self.nedlasting.areas(d.metadata_uuid, base_url=d.download_api_base)
                 d.areas_by_type = areas_by_type
@@ -166,7 +171,11 @@ class DiscoveryService:
         self, ds: DatasetAvailability, download_api_base: str
     ) -> DatasetAvailability:
         caps = self.nedlasting.capabilities(ds.metadata_uuid, base_url=download_api_base)
-        ds.capabilities = caps
+        ds.capabilities = _patch_map_selection_layer(
+            caps,
+            title=ds.title,
+            metadata_uuid=ds.metadata_uuid,
+        )
         ds.download_api_base = download_api_base
         if not caps:
             ds.areas_by_type = {}
@@ -178,7 +187,11 @@ class DiscoveryService:
 
     def _full_nedlasting_fill(self, ds: DatasetAvailability, download_api_base: str) -> DatasetAvailability:
         caps = ds.capabilities or self.nedlasting.capabilities(ds.metadata_uuid, base_url=download_api_base)
-        ds.capabilities = caps
+        ds.capabilities = _patch_map_selection_layer(
+            caps,
+            title=ds.title,
+            metadata_uuid=ds.metadata_uuid,
+        )
         ds.download_api_base = download_api_base
         if caps and caps.supports_area_selection:
             areas_by_type = self.nedlasting.areas(ds.metadata_uuid, base_url=download_api_base)
@@ -288,6 +301,20 @@ class DiscoveryService:
             full_refresh=counters.get("full", 0),
         )
         return ordered, final_stats
+
+
+def _patch_map_selection_layer(
+    caps: DatasetCapabilities | None,
+    *,
+    title: str,
+    metadata_uuid: str,
+) -> DatasetCapabilities | None:
+    if caps is None or caps.map_selection_layer:
+        return caps
+    inferred = infer_map_selection_layer(title=title, metadata_uuid=metadata_uuid)
+    if not inferred:
+        return caps
+    return replace(caps, map_selection_layer=inferred)
 
 
 def _apply_catalog_fields(

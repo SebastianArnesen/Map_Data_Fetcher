@@ -67,6 +67,48 @@ def normalize_grid_coordinates(x: float, y: float, *, source_epsg: int) -> tuple
     return x, y
 
 
+# Known metadata UUID → layer id when capabilities were cached before mapSelectionLayer existed.
+_LAYER_BY_METADATA_UUID: dict[str, str] = {
+    "d87fde8d-f151-4560-8aa1-7ecb6a5d90f4": "n100_raster_ruter",  # N100 Raster (UTM33) - Rutevis
+}
+
+
+def infer_map_selection_layer(*, title: str = "", metadata_uuid: str = "") -> str | None:
+    """Best-effort layer id when Nedlasting capabilities omit mapSelectionLayer."""
+    uuid_key = (metadata_uuid or "").strip().casefold()
+    if uuid_key in _LAYER_BY_METADATA_UUID:
+        return _LAYER_BY_METADATA_UUID[uuid_key]
+
+    title_cf = (title or "").casefold()
+    if "n100 raster" in title_cf and "rutevis" in title_cf:
+        return "n100_raster_ruter"
+    if "n100 raster" in title_cf and "regionsvis" in title_cf:
+        return "n100_raster_regionsvis"
+    if "n50 raster" in title_cf and "rutevis" in title_cf:
+        return "n50_raster_ruter"
+    if "n50 raster" in title_cf and "regionsvis" in title_cf:
+        return "n50_raster_regionsvis"
+    return None
+
+
+def resolve_map_selection_layer(
+    *,
+    map_selection_layer: str | None,
+    title: str = "",
+    metadata_uuid: str = "",
+) -> str | None:
+    """Return a layer id with a known GeoJSON grid, inferring from title/uuid when needed."""
+    layer = (map_selection_layer or "").strip() or infer_map_selection_layer(
+        title=title,
+        metadata_uuid=metadata_uuid,
+    )
+    if not layer:
+        return None
+    if geojson_url_for_map_selection_layer(layer):
+        return layer
+    return None
+
+
 def geojson_url_for_map_selection_layer(layer_id: str) -> str | None:
     """
     Resolve a Download API `mapSelectionLayer` id (e.g. "raster-n250") into a

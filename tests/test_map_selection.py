@@ -56,6 +56,12 @@ def test_raster_n250_default_url() -> None:
     assert url.endswith("/raster/n250_ny.geojson")
 
 
+def test_n100_raster_ruter_default_url() -> None:
+    url = geojson_url_for_map_selection_layer("n100_raster_ruter")
+    assert url is not None
+    assert url.endswith("/raster/n100_raster_ruter.geojson")
+
+
 def test_dtm_sjo_25_default_url() -> None:
     url = geojson_url_for_map_selection_layer("dtm-sjo-25")
     assert url is not None

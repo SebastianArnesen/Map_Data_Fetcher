@@ -113,7 +113,11 @@ from app.updates import build_latest_release_web_url, fetch_latest_release, is_n
 from app.workers import FuncWorker, connect_worker_signals
 from geonorge.client import HttpClient
 from geonorge.discovery import DiscoveryService
-from geonorge.map_selection import geojson_url_for_map_selection_layer, infer_source_epsg
+from geonorge.map_selection import (
+    geojson_url_for_map_selection_layer,
+    infer_source_epsg,
+    resolve_map_selection_layer,
+)
 from geonorge.models import (
     AreaOption,
     AreaType,
@@ -2136,30 +2140,33 @@ class MainWindow(QMainWindow):
         if pool is not None:
             pool.waitForDone(timeout_ms)
 
+    def _map_selection_layer(self, ds: DatasetAvailability | None) -> str | None:
+        if not ds or not ds.capabilities:
+            return None
+        return resolve_map_selection_layer(
+            map_selection_layer=ds.capabilities.map_selection_layer,
+            title=ds.title,
+            metadata_uuid=ds.metadata_uuid,
+        )
+
     def _update_open_map_visibility(self) -> None:
         self._update_area_search_row_visibility()
         ds = self._selected_dataset
-        show = False
-        if ds and self._active_area_type() == "celle" and ds.capabilities and ds.capabilities.map_selection_layer:
-            show = True
+        layer_id = self._map_selection_layer(ds)
+        show = bool(ds and self._active_area_type() == "celle" and layer_id)
         map_open = self._area_map_is_open()
         self.open_map_button.setVisible(show and not map_open)
         self.open_map_button.setEnabled(show and not map_open)
         self.close_map_button.setVisible(show and map_open)
         self.close_map_button.setEnabled(show and map_open)
-        if show and ds and ds.capabilities and ds.capabilities.map_selection_layer:
-            tip = f"Layer: {ds.capabilities.map_selection_layer}"
+        if show and layer_id:
+            tip = f"Layer: {layer_id}"
             self.open_map_button.setToolTip(f"Open a map view for selecting cells.\n\n{tip}")
             self.close_map_button.setToolTip(f"Close the map and return to the area list.\n\n{tip}")
 
     def _area_map_supported(self) -> bool:
         ds = self._selected_dataset
-        return bool(
-            ds
-            and self._active_area_type() == "celle"
-            and ds.capabilities
-            and ds.capabilities.map_selection_layer
-        )
+        return bool(ds and self._active_area_type() == "celle" and self._map_selection_layer(ds))
 
     def _refresh_area_map_for_dataset_change(self) -> None:
         if not self._area_map_supported():
@@ -2193,7 +2200,8 @@ class MainWindow(QMainWindow):
         if not self._area_map_is_open():
             return
         ds = self._selected_dataset
-        if not ds or not ds.capabilities or ds.capabilities.map_selection_layer != layer_id:
+        active_layer = self._map_selection_layer(ds)
+        if not ds or active_layer != layer_id:
             return
         if not isinstance(parsed, list):
             return
@@ -2232,9 +2240,9 @@ class MainWindow(QMainWindow):
             return
         self._wait_map_grid_workers()
         ds = self._selected_dataset
-        if not ds or self._active_area_type() != "celle" or not ds.capabilities or not ds.capabilities.map_selection_layer:
+        layer_id = self._map_selection_layer(ds)
+        if not ds or self._active_area_type() != "celle" or not layer_id:
             return
-        layer_id = ds.capabilities.map_selection_layer
         # Invalidate in-flight loads before touching the canvas (prevents stale worker apply).
         self._area_map_load_generation += 1
         load_generation = self._area_map_load_generation
@@ -2335,12 +2343,7 @@ class MainWindow(QMainWindow):
         if not self._area_map_is_open():
             return
         ds = self._selected_dataset
-        show = (
-            ds is not None
-            and self._active_area_type() == "celle"
-            and ds.capabilities is not None
-            and bool(ds.capabilities.map_selection_layer)
-        )
+        show = ds is not None and self._active_area_type() == "celle" and bool(self._map_selection_layer(ds))
         if not show:
             self._close_area_map()
 

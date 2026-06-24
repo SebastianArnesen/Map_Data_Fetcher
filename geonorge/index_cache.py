@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .cache import dataset_from_dict, dataset_to_dict, default_cache_dir, load_legacy_json_cache
 from .constants import ENRICHMENT_VERSION
+from .map_selection import resolve_map_selection_layer
 from .models import DatasetAvailability, DatasetRef
 
 
@@ -31,13 +32,19 @@ def _needs_area_reenrich(ds: DatasetAvailability) -> bool:
 
 
 def _needs_capabilities_reenrich(ds: DatasetAvailability) -> bool:
-    """Re-fetch Nedlasting capabilities when the cache predates map_selection_layer."""
-    if ds.enrichment_version >= ENRICHMENT_VERSION:
-        return False
+    """Re-fetch Nedlasting capabilities when map_selection_layer is missing for cell datasets."""
     caps = ds.capabilities
-    if not caps or not caps.supports_area_selection:
+    if not ds.enriched or not caps or not caps.supports_area_selection:
         return False
-    return "celle" in ds.area_types
+    if "celle" not in ds.area_types:
+        return False
+    if resolve_map_selection_layer(
+        map_selection_layer=caps.map_selection_layer,
+        title=ds.title,
+        metadata_uuid=ds.metadata_uuid,
+    ):
+        return False
+    return True
 
 
 class DatasetIndex:
