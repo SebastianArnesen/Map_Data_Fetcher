@@ -433,6 +433,15 @@ def build_stylesheet(c: ThemeColors, *, ui_scale: float | None = None) -> str:
             border: 1px solid {c.card_border};
             border-radius: 10px;
         }}
+        QMainWindow#expandedAreaMapWindow {{
+            background: {c.window_bg};
+        }}
+        QWidget#expandedMapContainer {{
+            background: {c.card_bg};
+        }}
+        QWidget#mapZoomOverlay {{
+            background: transparent;
+        }}
         QLabel {{
             color: {c.window_fg};
             font-size: {fs(12)};

@@ -231,6 +231,96 @@ def test_browse_mode_area_list_state_enables_all() -> None:
     assert state.disabled_signature_part == ()
 
 
+def test_no_selected_areas_cross_filters_projection_and_format() -> None:
+    from app.compatibility_ui import compute_compatibility
+    from geonorge.models import DatasetAvailability
+
+    all_areas = [
+        _area(
+            code="a",
+            formats_by_projection={"25833": frozenset({format_key("TIFF")})},
+            projections=["25833"],
+            formats=["TIFF"],
+        ),
+        _area(
+            code="b",
+            formats_by_projection={"4326": frozenset({format_key("NED")})},
+            projections=["4326"],
+            formats=["NED"],
+        ),
+    ]
+    dataset = DatasetAvailability(metadata_uuid="uuid", title="Test")
+    dataset.areas_by_type = {"celle": all_areas}
+    dataset.projections = [
+        ProjectionOption(code="25833", name="UTM 33"),
+        ProjectionOption(code="4326", name="WGS84"),
+    ]
+    dataset.formats = [FormatOption(name="TIFF"), FormatOption(name="NED")]
+
+    compat = compute_compatibility(
+        dataset,
+        area_type="celle",
+        selected_areas=[],
+        projection=ProjectionOption(code="4326", name="WGS84"),
+        fmt=FormatOption(name="TIFF"),
+    )
+    assert compat.enabled_area_codes == set()
+    assert "4326" not in compat.enabled_projection_codes
+    assert format_key("TIFF") not in compat.enabled_format_keys
+
+    with_utm = compute_compatibility(
+        dataset,
+        area_type="celle",
+        selected_areas=[],
+        projection=ProjectionOption(code="25833", name="UTM 33"),
+        fmt=FormatOption(name="TIFF"),
+    )
+    assert with_utm.enabled_area_codes == {"a"}
+    assert "25833" in with_utm.enabled_projection_codes
+    assert format_key("TIFF") in with_utm.enabled_format_keys
+
+
+def test_union_projection_enablement_without_selected_areas() -> None:
+    areas = [
+        _area(code="a", projections=["25832"]),
+        _area(code="b", projections=["25833"]),
+    ]
+    all_projections = [
+        ProjectionOption(code="25832"),
+        ProjectionOption(code="25833"),
+    ]
+    enabled = enabled_projection_codes(areas, all_projections, union=True)
+    assert enabled == {"25832", "25833"}
+
+
+def test_union_projection_respects_selected_format() -> None:
+    areas = [
+        _area(
+            code="a",
+            formats_by_projection={"4326": frozenset({format_key("NED")})},
+            projections=["4326"],
+            formats=["NED"],
+        ),
+        _area(
+            code="b",
+            formats_by_projection={"25833": frozenset({format_key("TIFF")})},
+            projections=["25833"],
+            formats=["TIFF"],
+        ),
+    ]
+    all_projections = [
+        ProjectionOption(code="4326"),
+        ProjectionOption(code="25833"),
+    ]
+    enabled = enabled_projection_codes(
+        areas,
+        all_projections,
+        format_name="TIFF",
+        union=True,
+    )
+    assert enabled == {"25833"}
+
+
 def test_area_gating_only_when_projection_and_format_explicit() -> None:
     from app.compatibility_ui import compute_compatibility
     from geonorge.models import DatasetAvailability, FormatOption, ProjectionOption

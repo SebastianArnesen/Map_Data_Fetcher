@@ -10,10 +10,11 @@ from typing import Any
 
 import requests
 from PySide6.QtCore import QObject, QPoint, QPointF, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import QSizePolicy, QToolTip, QVBoxLayout, QWidget
 
 from app.paths import app_data_dir
+from app.tooltip_delay import DEFAULT_TOOLTIP_DELAY_MS
 from geonorge.map_selection import normalize_grid_coordinates
 
 logger = logging.getLogger(__name__)
@@ -380,8 +381,14 @@ class MapCanvas(QWidget):
         self._tile_url_template = _tile_url_template()
 
         self._grid_cells: dict[str, GridCellShape] = {}
+        self._cell_labels: dict[str, str] = {}
         self._selected_codes: set[str] = set()
         self._disabled_codes: set[str] = set()
+
+        self._tooltip_timer = QTimer(self)
+        self._tooltip_timer.setSingleShot(True)
+        self._tooltip_timer.timeout.connect(self._show_hover_tooltip)
+        self._tooltip_global_pos = QPoint()
 
         self._signals = _TileFetchSignals(self)
         self._signals.tile_ready.connect(self._on_tile_ready, Qt.ConnectionType.QueuedConnection)
@@ -406,6 +413,30 @@ class MapCanvas(QWidget):
     def set_grid_cells(self, cells: list[GridCellShape]) -> None:
         self._grid_cells = {c.code: c for c in cells}
         self.update()
+
+    def set_cell_labels(self, labels: dict[str, str]) -> None:
+        self._cell_labels = dict(labels)
+
+    def _cancel_hover_tooltip(self) -> None:
+        self._tooltip_timer.stop()
+        QToolTip.hideText()
+
+    def _hover_tooltip_text(self, code: str | None) -> str:
+        if not code:
+            return ""
+        return self._cell_labels.get(code, code)
+
+    def _schedule_hover_tooltip(self, global_pos: QPoint) -> None:
+        self._cancel_hover_tooltip()
+        if not self._hover_code:
+            return
+        self._tooltip_global_pos = QPoint(global_pos)
+        self._tooltip_timer.start(DEFAULT_TOOLTIP_DELAY_MS)
+
+    def _show_hover_tooltip(self) -> None:
+        text = self._hover_tooltip_text(self._hover_code)
+        if text and self._hover_code and self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            QToolTip.showText(self._tooltip_global_pos, text, self)
 
     def set_selected_codes(self, codes: set[str]) -> None:
         self._selected_codes = set(codes)
@@ -565,6 +596,7 @@ class MapCanvas(QWidget):
         return None
 
     def wheelEvent(self, event) -> None:  # type: ignore[override]
+        self._cancel_hover_tooltip()
         delta = event.angleDelta().y()
         if not delta:
             return
@@ -588,10 +620,12 @@ class MapCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.LeftButton:
+            self._cancel_hover_tooltip()
             self._drag_last = event.pos()
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
         if self._drag_last is not None and (event.buttons() & Qt.LeftButton):
+            self._cancel_hover_tooltip()
             dx = event.pos().x() - self._drag_last.x()
             dy = event.pos().y() - self._drag_last.y()
             self._drag_last = event.pos()
@@ -606,7 +640,17 @@ class MapCanvas(QWidget):
         code = self._grid_hit_test(lon, lat)
         if code != self._hover_code:
             self._hover_code = code
+            if code:
+                self._schedule_hover_tooltip(event.globalPos())
+            else:
+                self._cancel_hover_tooltip()
             self.update()
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        self._hover_code = None
+        self._cancel_hover_tooltip()
+        self.update()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         if event.button() != Qt.LeftButton:
@@ -745,6 +789,9 @@ class MapPickerWidget(QWidget):
         root.addWidget(self.canvas, 1)
 
         self.canvas.toggled.connect(self.toggled)
+
+    def set_cell_labels(self, labels: dict[str, str]) -> None:
+        self.canvas.set_cell_labels(labels)
 
     def apply_parsed_grid(
         self,

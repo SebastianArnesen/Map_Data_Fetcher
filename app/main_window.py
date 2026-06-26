@@ -77,6 +77,13 @@ from app.dialogs import themed_message_box, themed_scrollable_message_dialog
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
 from app.map_picker import MapPickerWidget, fetch_text, parse_geojson_grid_cells
+from app.area_map_expand import (
+    ExpandedAreaMapWindow,
+    MapExpandButton,
+    MapZoomInButton,
+    MapZoomOutButton,
+    expanded_map_window_geometry,
+)
 from app.models_qt import (
     DATASET_COL_COPY,
     DATASET_COL_LINK,
@@ -770,6 +777,9 @@ class MainWindow(QMainWindow):
         self._map_grid_pool: QThreadPool | None = None
         self._area_map_reload_pending = False
         self._area_map_pending_apply: tuple[list, int, str] | None = None
+        self._area_map_expanded = False
+        self._area_map_expanded_window: ExpandedAreaMapWindow | None = None
+        self._area_map_closing = False
         self._recompute_running = False
         self._filter_index: DatasetFilterIndex | None = None
         self._login_required_datasets: list[DatasetAvailability] = []
@@ -940,23 +950,18 @@ class MainWindow(QMainWindow):
         area_search_combo_layout.addWidget(self.area_search, 1)
         area_search_combo_layout.addWidget(self.area_search_button, 0)
         area_search_layout.addWidget(self.area_search_combo, 1)
-        self.area_map_zoom_out = QPushButton("–")
-        self.area_map_zoom_out.setObjectName("toolbarButton")
-        self.area_map_zoom_out.setCursor(Qt.PointingHandCursor)
-        self.area_map_zoom_out.setFixedWidth(34)
-        self.area_map_zoom_out.setFixedHeight(34)
+        self.area_map_zoom_out = MapZoomOutButton()
         self.area_map_zoom_out.setVisible(False)
-        self.area_map_zoom_in = QPushButton("+")
-        self.area_map_zoom_in.setObjectName("toolbarButton")
-        self.area_map_zoom_in.setCursor(Qt.PointingHandCursor)
-        self.area_map_zoom_in.setFixedWidth(34)
-        self.area_map_zoom_in.setFixedHeight(34)
+        self.area_map_zoom_in = MapZoomInButton()
         self.area_map_zoom_in.setVisible(False)
+        self.area_map_expand = MapExpandButton()
+        self.area_map_expand.setVisible(False)
         self.area_search_toolbar_spacer = QWidget()
         self.area_search_toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.area_search_toolbar_spacer.setVisible(False)
         area_search_layout.addWidget(self.area_map_zoom_out, 0)
         area_search_layout.addWidget(self.area_map_zoom_in, 0)
+        area_search_layout.addWidget(self.area_map_expand, 0)
         area_search_layout.addWidget(self.area_search_toolbar_spacer, 1)
         self.open_map_button = QPushButton("Open map")
         self.open_map_button.setObjectName("toolbarButton")
@@ -1438,6 +1443,7 @@ class MainWindow(QMainWindow):
         for button in (
             getattr(self, "area_map_zoom_out", None),
             getattr(self, "area_map_zoom_in", None),
+            getattr(self, "area_map_expand", None),
             getattr(self, "open_map_button", None),
             getattr(self, "close_map_button", None),
         ):
@@ -1445,6 +1451,8 @@ class MainWindow(QMainWindow):
                 button.setFixedHeight(search_h)
                 if button in (self.open_map_button, self.close_map_button):
                     button.setFixedWidth(max(button.sizeHint().width(), search_h) + map_btn_pad)
+                elif hasattr(button, "setFixedSize"):
+                    button.setFixedSize(search_h, search_h)
 
     def _on_text_scale_clicked(self, button_id: int) -> None:
         scale_name = "large" if button_id == 1 else "normal"
@@ -1480,6 +1488,11 @@ class MainWindow(QMainWindow):
             clear_list_index_widgets(self.format_view)
         if hasattr(self, "area_map_picker"):
             self.area_map_picker.canvas.set_dark_basemap(not self._light_mode)
+        if self._area_map_expanded_window is not None:
+            factor = scale_name_to_factor(getattr(self, "_text_scale_name", "normal"))
+            self._area_map_expanded_window.setStyleSheet(
+                build_stylesheet(palette_for(self._light_mode), ui_scale=factor)
+            )
         if hasattr(self, "area_view"):
             clear_tree_index_widgets(
                 self.area_view,
@@ -1507,6 +1520,7 @@ class MainWindow(QMainWindow):
         self.close_map_button.clicked.connect(self._close_area_map)
         self.area_map_zoom_in.clicked.connect(self._on_area_map_zoom_in)
         self.area_map_zoom_out.clicked.connect(self._on_area_map_zoom_out)
+        self.area_map_expand.clicked.connect(self._expand_area_map)
         self.area_map_picker.toggled.connect(self._on_area_map_toggled)
         self.dataset_view.clicked.connect(self._on_dataset_clicked)
         self.dataset_view.selectionModel().currentChanged.connect(self._on_dataset_current_changed)
@@ -1869,7 +1883,7 @@ class MainWindow(QMainWindow):
 
     def _area_search_input_active(self) -> bool:
         area_type = self._active_area_type()
-        if self._area_map_is_open() or not self._area_type_shows_area_list(area_type):
+        if self._area_map_is_inline() or not self._area_type_shows_area_list(area_type):
             return False
         return len(self._candidate_areas(area_type)) >= _AREA_SEARCH_MIN_OPTIONS
 
@@ -1971,29 +1985,33 @@ class MainWindow(QMainWindow):
         )
 
     def _update_area_search_row_visibility(self) -> None:
-        map_open = self._area_map_is_open()
+        map_inline = self._area_map_is_inline()
         show_list_types = self._area_type_shows_area_list(self._active_area_type())
         show_area_search = self._area_search_input_active()
-        self.area_search_row.setVisible(map_open or show_list_types)
+        self.area_search_row.setVisible(map_inline or show_list_types)
         self.area_search_combo.setVisible(show_area_search)
-        self.area_map_zoom_out.setVisible(map_open)
-        self.area_map_zoom_in.setVisible(map_open)
-        self.area_search_toolbar_spacer.setVisible(map_open)
+        self.area_map_zoom_out.setVisible(map_inline)
+        self.area_map_zoom_in.setVisible(map_inline)
+        self.area_map_expand.setVisible(map_inline)
+        self.area_search_toolbar_spacer.setVisible(map_inline)
         self._discard_area_search_if_hidden()
 
     def _update_area_details_visibility(self) -> None:
-        show_list = self._area_type_shows_area_list(self._active_area_type())
+        shows_list_type = self._area_type_shows_area_list(self._active_area_type())
+        map_inline = self._area_map_is_inline()
+        show_list = shows_list_type and not map_inline
         self._update_area_search_row_visibility()
         self.area_list_section.setVisible(show_list)
-        self.area_panel_fill.setVisible(not show_list)
+        # Fill spacer is only for non-list area types (e.g. entire country), not inline map.
+        self.area_panel_fill.setVisible(not shows_list_type)
         layout = self.areas_panel.layout()
         if layout is not None:
-            list_idx = layout.indexOf(self.area_list_section)
+            stack_idx = layout.indexOf(self.area_stack)
             fill_idx = layout.indexOf(self.area_panel_fill)
-            if list_idx >= 0:
-                layout.setStretch(list_idx, 1 if show_list else 0)
+            if stack_idx >= 0:
+                layout.setStretch(stack_idx, 1)
             if fill_idx >= 0:
-                layout.setStretch(fill_idx, 0 if show_list else 1)
+                layout.setStretch(fill_idx, 1 if not shows_list_type else 0)
         if show_list:
             self.area_code_header.setVisible(not self._area_display_name_only)
         else:
@@ -2247,7 +2265,8 @@ class MainWindow(QMainWindow):
         if not self._area_map_supported():
             self._close_area_map()
             return
-        # Reload in place after filter lists settle (see _recompute_lists).
+        if self._area_map_is_expanded() and self._selected_dataset and self._area_map_expanded_window:
+            self._area_map_expanded_window.setWindowTitle(self._selected_dataset.title)
         self._area_map_reload_pending = self._area_map_is_open()
 
     def _flush_pending_area_map_reload(self) -> None:
@@ -2285,6 +2304,7 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.exception("Failed to apply map grid for layer %s", layer_id)
             return
+        self._sync_area_map_selection()
         if not self.area_map_picker.canvas._grid_cells:
             logger.warning(
                 "Map grid for layer %s is empty after apply (dataset %s)",
@@ -2353,9 +2373,18 @@ class MainWindow(QMainWindow):
         self.area_map_picker.canvas.set_selected_codes(set(selected_codes))
         self.area_map_picker.canvas.clear_basemap_tiles()
         self.area_map_picker.canvas.set_grid_cells([])
-        self.area_stack.setCurrentWidget(self.area_map_picker)
-        self.area_map_picker.setVisible(True)
+        if self._area_map_expanded:
+            window = self._ensure_expanded_map_window()
+            window.attach_map_picker(self.area_map_picker)
+            self.area_stack.setCurrentWidget(self.area_list_section)
+            window.show()
+            window.setWindowTitle(ds.title)
+        else:
+            self._reparent_map_picker_to_stack()
+            self.area_stack.setCurrentWidget(self.area_map_picker)
+            self.area_map_picker.setVisible(True)
         self._update_open_map_visibility()
+        self._update_area_details_visibility()
 
         proj_code = self._selected_projection.code if self._selected_projection else None
         source_epsg = infer_source_epsg(layer_id=layer_id, projection_code=proj_code)
@@ -2406,15 +2435,86 @@ class MainWindow(QMainWindow):
         connect_worker_signals(worker, result=on_result, error=on_error)
         self._start_map_grid_worker(worker)
 
-    def _area_map_is_open(self) -> bool:
+    def _area_map_is_inline(self) -> bool:
         return self.area_stack.currentWidget() is self.area_map_picker
+
+    def _area_map_is_expanded(self) -> bool:
+        return self._area_map_expanded and self._area_map_expanded_window is not None
+
+    def _area_map_is_open(self) -> bool:
+        return self._area_map_is_inline() or self._area_map_is_expanded()
+
+    def _reparent_map_picker_to_stack(self) -> None:
+        picker = self.area_map_picker
+        window = self._area_map_expanded_window
+        if window is not None:
+            window.detach_map_picker()
+        if self.area_stack.indexOf(picker) < 0:
+            self.area_stack.addWidget(picker)
+        picker.setParent(self.area_stack)
+
+    def _ensure_expanded_map_window(self) -> ExpandedAreaMapWindow:
+        window = self._area_map_expanded_window
+        if window is None:
+            window = ExpandedAreaMapWindow(self)
+            window.closed_by_user.connect(self._on_expanded_area_map_closed)
+            window.zoom_in.connect(self._on_area_map_zoom_in)
+            window.zoom_out.connect(self._on_area_map_zoom_out)
+            screen = window.screen() or self.screen()
+            if screen is not None:
+                window.setGeometry(*expanded_map_window_geometry(screen))
+            self._area_map_expanded_window = window
+        ds = self._selected_dataset
+        if ds:
+            window.setWindowTitle(ds.title)
+        return window
+
+    def _expand_area_map(self) -> None:
+        if not self._area_map_is_inline():
+            return
+        window = self._ensure_expanded_map_window()
+        window.attach_map_picker(self.area_map_picker)
+        self._area_map_expanded = True
+        self.area_stack.setCurrentWidget(self.area_list_section)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        self._update_open_map_visibility()
+        self._update_area_details_visibility()
+        QTimer.singleShot(0, lambda: self._populate_areas_for_type(self._active_area_type()))
+
+    def _collapse_expanded_map_to_inline(self, *, force: bool = False) -> None:
+        if not force and not self._area_map_expanded:
+            return
+        self._area_map_expanded = False
+        self._reparent_map_picker_to_stack()
+        self.area_stack.setCurrentWidget(self.area_map_picker)
+        self.area_map_picker.setVisible(True)
+        self._update_open_map_visibility()
+        self._update_area_details_visibility()
+
+    def _on_expanded_area_map_closed(self) -> None:
+        if self._area_map_closing:
+            return
+        if not self._area_map_expanded:
+            return
+        had_grid = bool(self.area_map_picker.canvas._grid_cells)
+        self._area_map_expanded = False
+        if had_grid:
+            self._collapse_expanded_map_to_inline(force=True)
+            QTimer.singleShot(0, lambda: self._populate_areas_for_type(self._active_area_type()))
+        else:
+            self._update_open_map_visibility()
+            self._update_area_details_visibility()
 
     def _sync_area_map_selection(self) -> None:
         if not self._area_map_is_open():
             return
+        candidate_areas = self._candidate_areas("celle")
+        self.area_map_picker.set_cell_labels({a.code: a.label for a in candidate_areas})
         if self._dataset_compatibility_mode():
             compat = self._compatibility_state
-            all_codes = {a.code for a in self._candidate_areas("celle")}
+            all_codes = {a.code for a in candidate_areas}
             disabled = {code for code in all_codes if code not in compat.enabled_area_codes}
             self.area_map_picker.canvas.set_disabled_codes(disabled)
         else:
@@ -2432,17 +2532,26 @@ class MainWindow(QMainWindow):
     def _close_area_map(self) -> None:
         cancel_pending_tooltips()
         was_open = self._area_map_is_open()
-        self._area_map_load_generation += 1
-        self._area_map_reload_pending = False
-        self._area_map_pending_apply = None
-        self._wait_map_grid_workers()
-        self.area_map_picker.canvas.clear_basemap_tiles()
-        self.area_map_picker.canvas.set_grid_cells([])
-        self.area_stack.setCurrentWidget(self.area_list_section)
-        self.area_map_picker.setVisible(False)
-        self._update_open_map_visibility()
-        if was_open:
-            QTimer.singleShot(0, lambda: self._populate_areas_for_type(self._active_area_type()))
+        self._area_map_closing = True
+        try:
+            self._area_map_expanded = False
+            if self._area_map_expanded_window is not None:
+                self._area_map_expanded_window.hide()
+                self._area_map_expanded_window.detach_map_picker()
+            self._area_map_load_generation += 1
+            self._area_map_reload_pending = False
+            self._area_map_pending_apply = None
+            self._wait_map_grid_workers()
+            self.area_map_picker.canvas.clear_basemap_tiles()
+            self.area_map_picker.canvas.set_grid_cells([])
+            self._reparent_map_picker_to_stack()
+            self.area_stack.setCurrentWidget(self.area_list_section)
+            self.area_map_picker.setVisible(False)
+            self._update_open_map_visibility()
+            if was_open:
+                QTimer.singleShot(0, lambda: self._populate_areas_for_type(self._active_area_type()))
+        finally:
+            self._area_map_closing = False
 
     def _on_area_map_zoom_in(self) -> None:
         canvas = self.area_map_picker.canvas
@@ -2800,7 +2909,7 @@ class MainWindow(QMainWindow):
                 self._populate_area_type_list()
             if refresh.intersection({"areas", "projections", "formats", "selected", "download"}):
                 self._sync_compatibility_state()
-            if "areas" in refresh and not self._area_map_is_open():
+            if "areas" in refresh and not self._area_map_is_inline():
                 self._populate_areas_for_type(self._active_area_type(), preserve_selection=True)
             if refresh.intersection({"projections", "formats", "selected", "download"}):
                 self._sync_compatibility_state()
@@ -2812,6 +2921,8 @@ class MainWindow(QMainWindow):
                 self._update_selected_panel()
             if "download" in refresh:
                 self._update_download_button_state()
+            if self._area_map_is_open():
+                self._sync_area_map_selection()
         finally:
             self._recompute_running = False
             self._end_filter_panel_busy()

@@ -56,14 +56,37 @@ def area_supports(
 def enabled_projection_codes(
     areas: list[AreaOption],
     all_projections: list[ProjectionOption],
+    *,
+    format_name: str | None = None,
+    union: bool = False,
 ) -> set[str]:
+    """Return projection codes supported by reference areas.
+
+    When *union* is True, a projection is enabled if any reference area supports it
+    (optionally with *format_name*). Otherwise all reference areas must support it.
+    """
     if not areas:
-        return {p.code for p in all_projections}
-    enabled: set[str] | None = None
+        return set()
+    if union:
+        enabled: set[str] = set()
+        for area in areas:
+            for projection in all_projections:
+                if area_supports(
+                    area,
+                    projection_code=projection.code,
+                    format_name=format_name,
+                ):
+                    enabled.add(projection.code)
+        return enabled
+    intersected: set[str] | None = None
     for area in areas:
-        supported = {p.code for p in all_projections if area_supports(area, projection_code=p.code)}
-        enabled = supported if enabled is None else enabled & supported
-    return enabled or set()
+        supported = {
+            p.code
+            for p in all_projections
+            if area_supports(area, projection_code=p.code, format_name=format_name)
+        }
+        intersected = supported if intersected is None else intersected & supported
+    return intersected or set()
 
 
 def enabled_format_keys(
@@ -71,18 +94,35 @@ def enabled_format_keys(
     all_formats: list[FormatOption],
     *,
     projection_code: str | None,
+    union: bool = False,
 ) -> set[str]:
+    """Return format keys supported by reference areas for the given projection.
+
+    When *union* is True, a format is enabled if any reference area supports it.
+    Otherwise all reference areas must support it.
+    """
     if not areas:
-        return {format_key(f) for f in all_formats}
-    enabled: set[str] | None = None
+        return set()
+    if union:
+        enabled: set[str] = set()
+        for area in areas:
+            for fmt in all_formats:
+                if area_supports(
+                    area,
+                    projection_code=projection_code,
+                    format_name=fmt.name,
+                ):
+                    enabled.add(format_key(fmt))
+        return enabled
+    intersected: set[str] | None = None
     for area in areas:
         supported = {
             format_key(f)
             for f in all_formats
             if area_supports(area, projection_code=projection_code, format_name=f.name)
         }
-        enabled = supported if enabled is None else enabled & supported
-    return enabled or set()
+        intersected = supported if intersected is None else intersected & supported
+    return intersected or set()
 
 
 def enabled_area_codes(
@@ -103,11 +143,32 @@ def projection_disabled_reason(
     *,
     selected_areas: list[AreaOption],
     total_selected: int,
+    format_name: str | None = None,
+    union: bool = False,
 ) -> str:
     if not selected_areas:
         return projection.label
+    if union:
+        if any(
+            area_supports(
+                area,
+                projection_code=projection.code,
+                format_name=format_name,
+            )
+            for area in selected_areas
+        ):
+            return projection.label
+        if format_name:
+            return "Not available with this format for any area"
+        return "Not available for any area"
     missing = sum(
-        1 for area in selected_areas if not area_supports(area, projection_code=projection.code)
+        1
+        for area in selected_areas
+        if not area_supports(
+            area,
+            projection_code=projection.code,
+            format_name=format_name,
+        )
     )
     if missing == 0:
         return projection.label
@@ -122,10 +183,24 @@ def format_disabled_reason(
     selected_areas: list[AreaOption],
     projection: ProjectionOption | None,
     total_selected: int,
+    union: bool = False,
 ) -> str:
     projection_code = projection.code if projection else None
     if not selected_areas:
         return fmt.label
+    if union:
+        if any(
+            area_supports(
+                area,
+                projection_code=projection_code,
+                format_name=fmt.name,
+            )
+            for area in selected_areas
+        ):
+            return fmt.label
+        if projection:
+            return f"Not available with {projection.label} for any area"
+        return "Not available for any area"
     missing = sum(
         1
         for area in selected_areas

@@ -2,7 +2,7 @@
 
 Desktop app for browsing and downloading map datasets from [Geonorge](https://www.geonorge.no/).
 
-Current version: **1.3.0** (see `app/__init__.py`).
+Current version: **1.4.0** (see `app/__init__.py`).
 
 ## License
 

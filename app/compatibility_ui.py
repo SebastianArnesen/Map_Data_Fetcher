@@ -167,12 +167,23 @@ def compute_compatibility(
     state.all_projections = list(dataset.projections)
     state.all_formats = list(dataset.formats)
 
+    # With no explicit area picks, cross-filter projections/formats against every
+    # area in the dataset (union). With picks, require compatibility with all of them.
+    reference_areas = selected_areas if selected_areas else state.all_areas
+    use_union = not selected_areas
     total_selected = len(selected_areas)
-    state.enabled_projection_codes = enabled_projection_codes(selected_areas, state.all_projections)
+
+    state.enabled_projection_codes = enabled_projection_codes(
+        reference_areas,
+        state.all_projections,
+        format_name=fmt.name if fmt else None,
+        union=use_union,
+    )
     state.enabled_format_keys = enabled_format_keys(
-        selected_areas,
+        reference_areas,
         state.all_formats,
         projection_code=projection.code if projection else None,
+        union=use_union,
     )
     state.enabled_area_codes = enabled_area_codes(
         state.all_areas,
@@ -182,15 +193,20 @@ def compute_compatibility(
 
     for p in state.all_projections:
         state.projection_tooltips[p.code] = projection_disabled_reason(
-            p, selected_areas=selected_areas, total_selected=total_selected
+            p,
+            selected_areas=reference_areas,
+            total_selected=len(reference_areas),
+            format_name=fmt.name if fmt else None,
+            union=use_union,
         )
 
     for f in state.all_formats:
         state.format_tooltips[format_key(f)] = format_disabled_reason(
             f,
-            selected_areas=selected_areas,
+            selected_areas=reference_areas,
             projection=projection,
-            total_selected=total_selected,
+            total_selected=len(reference_areas),
+            union=use_union,
         )
 
     for area in state.all_areas:
