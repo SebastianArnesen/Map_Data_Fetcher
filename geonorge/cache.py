@@ -85,6 +85,9 @@ def dataset_to_dict(it: DatasetAvailability) -> dict[str, Any]:
                     "projections": [
                         {"code": p.code, "name": p.name, "codespace": p.codespace} for p in a.projections
                     ],
+                    "formats_by_projection": {
+                        code: sorted(list(fmts)) for code, fmts in a.formats_by_projection.items()
+                    },
                 }
                 for a in v
             ]
@@ -128,6 +131,10 @@ def dataset_from_dict(d: dict[str, Any]) -> DatasetAvailability:
                     ProjectionOption(code=p["code"], name=p.get("name"), codespace=p.get("codespace"))
                     for p in (a.get("projections") or [])
                 ],
+                formats_by_projection={
+                    str(code): frozenset(str(f) for f in fmts)
+                    for code, fmts in (a.get("formats_by_projection") or {}).items()
+                },
             )
             for a in v
         ]

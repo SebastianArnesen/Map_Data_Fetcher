@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from geonorge.constants import ENRICHMENT_VERSION
 from geonorge.index_cache import _needs_capabilities_reenrich
 from geonorge.map_selection import (
     geojson_url_for_map_selection_layer,
@@ -7,6 +8,10 @@ from geonorge.map_selection import (
     resolve_map_selection_layer,
 )
 from geonorge.models import DatasetAvailability, DatasetCapabilities
+
+
+def test_enrichment_version_is_current() -> None:
+    assert ENRICHMENT_VERSION == 6
 
 
 def test_legacy_v3_cell_cache_needs_capabilities_reenrich() -> None:

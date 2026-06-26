@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.theme import SHARED, palette_for
 
@@ -117,3 +128,130 @@ def themed_message_box(
         box.setIconPixmap(_success_icon_pixmap())
     apply_message_box_theme(box, light_mode=_resolve_light_mode(parent))
     return box
+
+
+def build_scrollable_dialog_stylesheet(*, light_mode: bool) -> str:
+    c = palette_for(light_mode)
+    return f"""
+        QDialog#scrollableMessageDialog {{
+            background-color: {c.card_bg};
+        }}
+        QLabel#scrollableMessageHeading {{
+            color: {c.window_fg};
+            background: transparent;
+            font-size: 11pt;
+            font-weight: 700;
+        }}
+        QLabel#scrollableMessageSubtitle {{
+            color: {c.secondary_label_fg};
+            background: transparent;
+            font-size: 9pt;
+        }}
+        QTextEdit#scrollableMessageBody {{
+            background: {c.input_bg};
+            color: {c.window_fg};
+            border: 1px solid {c.input_border};
+            border-radius: 8px;
+            font-family: Consolas, monospace;
+            font-size: 9pt;
+            padding: 6px;
+        }}
+        QPushButton#scrollableMessageOk {{
+            background: {c.button_bg};
+            color: {c.button_fg};
+            border: 1px solid {c.button_border};
+            border-radius: 8px;
+            padding: 6px 16px;
+            min-width: 88px;
+            font-weight: 600;
+        }}
+        QPushButton#scrollableMessageOk:hover {{
+            background: {c.button_hover_bg};
+            color: {c.button_hover_fg};
+            border-color: {c.button_hover_border};
+        }}
+        QPushButton#scrollableMessageOk:pressed {{
+            background: {c.button_pressed_bg};
+            border-color: {c.button_pressed_border};
+        }}
+        QScrollArea#scrollableMessageScroll {{
+            background: transparent;
+            border: none;
+        }}
+    """
+
+
+def themed_scrollable_message_dialog(
+    parent: QWidget | None,
+    *,
+    title: str,
+    heading: str,
+    body: str,
+    subtitle: str = "",
+    icon: str = "none",
+    max_body_height: int = 320,
+) -> QDialog:
+    """Dialog with a capped, scrollable body for long text (e.g. many download paths)."""
+    light_mode = _resolve_light_mode(parent)
+    dialog = QDialog(parent)
+    dialog.setObjectName("scrollableMessageDialog")
+    dialog.setWindowTitle(title)
+    dialog.setModal(True)
+    dialog.setMinimumWidth(520)
+    dialog.setMaximumHeight(max_body_height + 180)
+    dialog.setStyleSheet(build_scrollable_dialog_stylesheet(light_mode=light_mode))
+
+    root = QVBoxLayout(dialog)
+    root.setContentsMargins(16, 14, 16, 14)
+    root.setSpacing(10)
+
+    header = QHBoxLayout()
+    header.setSpacing(12)
+    if icon == "warning":
+        icon_label = QLabel()
+        icon_label.setPixmap(_warning_icon_pixmap(40))
+        header.addWidget(icon_label)
+    elif icon == "success":
+        icon_label = QLabel()
+        icon_label.setPixmap(_success_icon_pixmap(40))
+        header.addWidget(icon_label)
+
+    header_text = QVBoxLayout()
+    header_text.setSpacing(4)
+    heading_label = QLabel(heading)
+    heading_label.setObjectName("scrollableMessageHeading")
+    heading_label.setWordWrap(True)
+    header_text.addWidget(heading_label)
+    if subtitle:
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("scrollableMessageSubtitle")
+        subtitle_label.setWordWrap(True)
+        header_text.addWidget(subtitle_label)
+    header.addLayout(header_text, 1)
+    root.addLayout(header)
+
+    scroll = QScrollArea()
+    scroll.setObjectName("scrollableMessageScroll")
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setMaximumHeight(max_body_height)
+
+    body_edit = QTextEdit()
+    body_edit.setObjectName("scrollableMessageBody")
+    body_edit.setReadOnly(True)
+    body_edit.setPlainText(body)
+    body_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+    scroll.setWidget(body_edit)
+    root.addWidget(scroll, 1)
+
+    buttons = QHBoxLayout()
+    buttons.addStretch(1)
+    ok = QPushButton("OK")
+    ok.setObjectName("scrollableMessageOk")
+    ok.setDefault(True)
+    ok.clicked.connect(dialog.accept)
+    buttons.addWidget(ok)
+    root.addLayout(buttons)
+
+    return dialog

@@ -778,6 +778,13 @@ def build_stylesheet(c: ThemeColors, *, ui_scale: float | None = None) -> str:
             padding: 0px;
             margin: 0px;
         }}
+        QLabel#selectedWarningLabel {{
+            color: {s.clear};
+            font-size: {fs(10)};
+            font-weight: 600;
+            padding: 4px 8px 0px 8px;
+            margin: 0px;
+        }}
         QLabel#selectedDatasetValueAuto {{
             color: {c.selected_value_auto_fg};
             font-size: {fs(10)};
@@ -880,6 +887,12 @@ def checkbox_tick_color() -> QColor:
 
 def list_selection_border_color(*, light_mode: bool) -> QColor:
     return qcolor(palette_for(light_mode).list_selected_bg)
+
+
+def checkbox_disabled_fill_border(*, light_mode: bool) -> tuple[QColor, QColor]:
+    """Muted checkbox for disabled area rows (no hover affordance)."""
+    muted = qcolor(palette_for(light_mode).disabled_list_item)
+    return muted, muted
 
 
 def checkbox_auto_fill_border(*, light_mode: bool, hover: bool) -> tuple[QColor, QColor]:

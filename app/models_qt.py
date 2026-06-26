@@ -30,6 +30,7 @@ from app.theme import (
     LIGHT,
     checkbox_auto_fill_border,
     checkbox_auto_tick_color,
+    checkbox_disabled_fill_border,
     checkbox_fill_border,
     checkbox_tick_color,
     copy_hover_background,
@@ -227,18 +228,33 @@ class AreaSelectionModel(QStandardItemModel):
         super().__init__()
         self._all_label = all_label
         self._suppress = False
+        self._disabled_keys: set[str] = set()
         self.setHorizontalHeaderLabels(["", "Code", "Name"])
         self.itemChanged.connect(self._on_item_changed)
+
+    def disabled_keys(self) -> set[str]:
+        return set(self._disabled_keys)
+
+    def is_row_disabled(self, row: int) -> bool:
+        item = self.item(row, 0)
+        if not item:
+            return False
+        key = item.data(Qt.UserRole + 1)
+        return isinstance(key, str) and key in self._disabled_keys
 
     def set_items(
         self,
         items: Iterable[CheckListItem],
         *,
         name_only: bool = False,
+        disabled_keys: set[str] | None = None,
+        tooltips: dict[str, str] | None = None,
         notify: bool = True,
     ) -> None:
         items = list(items)
         self._name_only = bool(name_only)
+        self._disabled_keys = set(disabled_keys or [])
+        tooltips = tooltips or {}
         self._suppress = True
         try:
             self.clear()
@@ -246,19 +262,27 @@ class AreaSelectionModel(QStandardItemModel):
                 self.setHorizontalHeaderLabels(["", "Name"])
             else:
                 self.setHorizontalHeaderLabels(["", "Code", "Name"])
+            disabled_brush = QBrush(disabled_list_item_color())
             for it in items:
                 check_item = QStandardItem()
                 check_item.setData(it.key, Qt.UserRole + 1)
                 check_item.setData(it.payload, Qt.UserRole + 2)
-                check_item.setCheckable(True)
+                is_disabled = it.key in self._disabled_keys
+                check_item.setCheckable(not is_disabled)
                 check_item.setCheckState(Qt.Unchecked)
-                area_tip = it.label or it.name
+                area_tip = tooltips.get(it.key) or it.label or it.name
                 check_item.setEditable(False)
                 check_item.setToolTip(area_tip)
+                if is_disabled:
+                    check_item.setEnabled(False)
+                    check_item.setForeground(disabled_brush)
                 if name_only:
                     name_item = QStandardItem(it.name)
                     name_item.setEditable(False)
                     name_item.setToolTip(area_tip)
+                    if is_disabled:
+                        name_item.setEnabled(False)
+                        name_item.setForeground(disabled_brush)
                     self.appendRow([check_item, name_item])
                 else:
                     code_item = QStandardItem(it.code)
@@ -266,6 +290,9 @@ class AreaSelectionModel(QStandardItemModel):
                     for item in (code_item, name_item):
                         item.setEditable(False)
                         item.setToolTip(area_tip)
+                        if is_disabled:
+                            item.setEnabled(False)
+                            item.setForeground(disabled_brush)
                     self.appendRow([check_item, code_item, name_item])
         finally:
             self._suppress = False
@@ -301,24 +328,40 @@ class AreaSelectionModel(QStandardItemModel):
                 if not item:
                     continue
                 key = item.data(Qt.UserRole + 1)
+                if isinstance(key, str) and key in self._disabled_keys:
+                    item.setCheckState(Qt.Unchecked)
+                    continue
                 item.setCheckState(Qt.Checked if key in keys else Qt.Unchecked)
         finally:
             self._suppress = False
         self.selection_changed.emit()
 
+    def enabled_row_count(self) -> int:
+        return sum(1 for row in range(self.rowCount()) if not self.is_row_disabled(row))
+
     def auto_select_if_single_option(self) -> None:
-        if self.rowCount() == 1:
-            self._suppress = True
-            try:
-                item = self.item(0, 0)
-                if item:
-                    item.setCheckState(Qt.Checked)
-            finally:
-                self._suppress = False
-            self.selection_changed.emit()
+        enabled_rows = [row for row in range(self.rowCount()) if not self.is_row_disabled(row)]
+        if len(enabled_rows) != 1:
+            return
+        self._suppress = True
+        try:
+            item = self.item(enabled_rows[0], 0)
+            if item:
+                item.setCheckState(Qt.Checked)
+        finally:
+            self._suppress = False
+        self.selection_changed.emit()
 
     def _on_item_changed(self, item: QStandardItem) -> None:
         if self._suppress or item.column() != 0:
+            return
+        key = item.data(Qt.UserRole + 1)
+        if isinstance(key, str) and key in self._disabled_keys:
+            self._suppress = True
+            try:
+                item.setCheckState(Qt.Unchecked)
+            finally:
+                self._suppress = False
             return
         self.selection_changed.emit()
 
@@ -327,6 +370,8 @@ class AreaSelectionModel(QStandardItemModel):
         try:
             state = Qt.Checked if checked else Qt.Unchecked
             for row in range(self.rowCount()):
+                if self.is_row_disabled(row):
+                    continue
                 child = self.item(row, 0)
                 if child:
                     child.setCheckState(state)
@@ -336,8 +381,11 @@ class AreaSelectionModel(QStandardItemModel):
 
     def aggregate_check_state(self) -> Qt.CheckState:
         checked = 0
-        total = self.rowCount()
+        total = 0
         for row in range(self.rowCount()):
+            if self.is_row_disabled(row):
+                continue
+            total += 1
             child = self.item(row, 0)
             if child and _check_state_value(child.checkState()) == int(Qt.Checked.value):
                 checked += 1
@@ -362,16 +410,22 @@ class CheckBoxDelegate(QStyledItemDelegate):
         state_value = _check_state_value(index.data(Qt.CheckStateRole))
         is_checked = state_value == int(Qt.Checked.value)
         is_partial = state_value == int(Qt.PartiallyChecked.value)
-        is_hover = bool(option.state & QStyle.State_MouseOver)
+        model = index.model()
+        is_disabled = hasattr(model, "is_row_disabled") and model.is_row_disabled(index.row())
+        is_hover = not is_disabled and bool(option.state & QStyle.State_MouseOver)
         key = index.data(Qt.UserRole + 1)
         auto_codes = getattr(self._owner, "_auto_area_codes", set()) or set()
-        is_auto = isinstance(key, str) and key in auto_codes
+        is_auto = not is_disabled and isinstance(key, str) and key in auto_codes
 
         rect = QRectF(option.rect.x() + 5, option.rect.y() + (option.rect.height() - 13) / 2, 13, 13)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
         light_mode = resolve_light_mode(self._owner)
-        if is_auto:
+        if is_disabled:
+            fill, border = checkbox_disabled_fill_border(light_mode=light_mode)
+            is_checked = False
+            is_partial = False
+        elif is_auto:
             fill, border = checkbox_auto_fill_border(light_mode=light_mode, hover=is_hover)
             is_checked = True
             is_partial = False
@@ -387,7 +441,7 @@ class CheckBoxDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(rect, 3, 3)
 
         tick = checkbox_auto_tick_color() if is_auto else checkbox_tick_color()
-        if is_checked and not is_auto:
+        if is_checked and not is_auto and not is_disabled:
             painter.setPen(QPen(tick, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.drawLine(rect.left() + 3.0, rect.center().y(), rect.left() + 5.5, rect.bottom() - 3.5)
             painter.drawLine(rect.left() + 5.5, rect.bottom() - 3.5, rect.right() - 2.5, rect.top() + 3.5)

@@ -46,6 +46,8 @@ class AreaOption:
     name: str
     formats: list[FormatOption] = field(default_factory=list)
     projections: list[ProjectionOption] = field(default_factory=list)
+    # projection code -> normalized format keys valid under that projection
+    formats_by_projection: dict[str, frozenset[str]] = field(default_factory=dict)
 
     @property
     def label(self) -> str:

@@ -381,6 +381,7 @@ class MapCanvas(QWidget):
 
         self._grid_cells: dict[str, GridCellShape] = {}
         self._selected_codes: set[str] = set()
+        self._disabled_codes: set[str] = set()
 
         self._signals = _TileFetchSignals(self)
         self._signals.tile_ready.connect(self._on_tile_ready, Qt.ConnectionType.QueuedConnection)
@@ -408,6 +409,10 @@ class MapCanvas(QWidget):
 
     def set_selected_codes(self, codes: set[str]) -> None:
         self._selected_codes = set(codes)
+        self.update()
+
+    def set_disabled_codes(self, codes: set[str]) -> None:
+        self._disabled_codes = set(codes)
         self.update()
 
     def set_basemap_deferred(self, deferred: bool) -> None:
@@ -615,7 +620,7 @@ class MapCanvas(QWidget):
             return
         lon, lat = self._screen_to_lonlat(event.pos())
         code = self._grid_hit_test(lon, lat)
-        if not code:
+        if not code or code in self._disabled_codes:
             return
         selected = code not in self._selected_codes
         if selected:
@@ -675,8 +680,11 @@ class MapCanvas(QWidget):
         if self._grid_cells:
             selected_fill = QColor(0, 120, 215, 110) if not self._dark_basemap else QColor(111, 150, 255, 130)
             hover_fill = QColor(255, 165, 0, 90) if not self._dark_basemap else QColor(255, 214, 120, 110)
+            disabled_fill = QColor(120, 120, 120, 45) if not self._dark_basemap else QColor(90, 90, 90, 55)
             stroke_color = QColor(0, 0, 0, 180) if not self._dark_basemap else QColor(255, 255, 255, 210)
+            disabled_stroke = QColor(0, 0, 0, 70) if not self._dark_basemap else QColor(255, 255, 255, 80)
             stroke = QPen(stroke_color, 1.0)
+            disabled_pen = QPen(disabled_stroke, 1.0)
             stroke.setCosmetic(True)
             painter.setPen(stroke)
 
@@ -702,6 +710,13 @@ class MapCanvas(QWidget):
                     top_left=top_left,
                 )
                 if mapped.isEmpty():
+                    continue
+
+                if code in self._disabled_codes:
+                    painter.fillPath(mapped, disabled_fill)
+                    painter.setPen(disabled_pen)
+                    painter.drawPath(mapped)
+                    painter.setPen(stroke)
                     continue
 
                 if code in self._selected_codes:

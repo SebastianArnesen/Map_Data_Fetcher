@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from .client import GeonorgeError, HttpClient
+from .compatibility import area_supports, format_key
 from .models import (
     AreaOption,
     AreaType,
@@ -276,28 +277,42 @@ class NedlastingClient:
         format_name: str,
         projection_code: str | None,
         base_url: str | None = None,
+        area_option: AreaOption | None = None,
     ) -> tuple[bool, str | None]:
         """
-        Best-effort preflight. If we can infer incompatibility from codelists, return (False, reason).
-        If we can't be sure, return (True, None) and let order placement be the source of truth.
+        Preflight using cached per-area compatibility when available.
+        Falls back to dataset-wide codelists only when area_option is not provided.
         """
         if not area_type or not area_code:
             return (True, None)
-        try:
-            areas_by_type = self.areas(metadata_uuid, base_url=base_url)
-        except PermissionError:
-            return (False, "Requires login/authorization.")
-        areas = areas_by_type.get(area_type) or []
-        if not any(a.code == area_code for a in areas):
-            return (False, "Selected area is not available for this dataset.")
-        # Some area payloads may include per-area formats/projections, but our parser currently
-        # normalizes to just code/name. So this is a soft preflight only.
+
+        area = area_option
+        if area is None:
+            try:
+                areas_by_type = self.areas(metadata_uuid, base_url=base_url)
+            except PermissionError:
+                return (False, "Requires login/authorization.")
+            for candidate in areas_by_type.get(area_type) or []:
+                if candidate.code == area_code:
+                    area = candidate
+                    break
+            if area is None:
+                return (False, "Selected area is not available for this dataset.")
+
+        if not area_supports(area, projection_code=projection_code, format_name=format_name):
+            if projection_code and not area_supports(area, projection_code=projection_code):
+                return (False, "Selected projection is not available for this area.")
+            return (False, "Selected format is not available for this area and projection.")
+
+        if area.formats or area.projections or area.formats_by_projection:
+            return (True, None)
+
         try:
             formats = self.formats(metadata_uuid, base_url=base_url)
             if formats and not any(f.name == format_name for f in formats):
                 return (False, "Selected format is not available for this dataset.")
             projections = self.projections(metadata_uuid, base_url=base_url)
-            if projections and not any(p.code == projection_code for p in projections):
+            if projections and projection_code and not any(p.code == projection_code for p in projections):
                 return (False, "Selected projection is not available for this dataset.")
         except PermissionError:
             return (False, "Requires login/authorization.")
@@ -440,6 +455,9 @@ def _merge_area_option(out: dict[AreaType, dict[str, AreaOption]], option: AreaO
         name=existing.name or option.name,
         formats=_merge_formats(existing.formats, option.formats),
         projections=_merge_projections(existing.projections, option.projections),
+        formats_by_projection=_merge_formats_by_projection(
+            existing.formats_by_projection, option.formats_by_projection
+        ),
     )
 
 
@@ -470,15 +488,35 @@ def _merge_projections(left: list[ProjectionOption], right: list[ProjectionOptio
     return out
 
 
+def _merge_formats_by_projection(
+    left: dict[str, frozenset[str]],
+    right: dict[str, frozenset[str]],
+) -> dict[str, frozenset[str]]:
+    """Intersect per-projection format sets when duplicate area rows are merged."""
+    merged: dict[str, set[str]] = {}
+    for code in set(left) | set(right):
+        left_fmts = left.get(code) or frozenset()
+        right_fmts = right.get(code) or frozenset()
+        if left_fmts and right_fmts:
+            merged[code] = set(left_fmts) & set(right_fmts)
+        elif left_fmts:
+            merged[code] = set(left_fmts)
+        elif right_fmts:
+            merged[code] = set(right_fmts)
+    return {code: frozenset(fmts) for code, fmts in merged.items()}
+
+
 def _area_option_from_dict(area_type: str, item: dict[str, Any], code: Any, name: Any) -> AreaOption:
     formats = _parse_embedded_formats(item.get("formats") or item.get("Formats"))
     projections = _parse_embedded_projections(item.get("projections") or item.get("Projections"))
+    formats_by_projection = _parse_formats_by_projection(item, formats=formats, projections=projections)
     return AreaOption(
         type=area_type,  # type: ignore[arg-type]
         code=str(code),
         name=str(name),
         formats=formats,
         projections=projections,
+        formats_by_projection=formats_by_projection,
     )
 
 
@@ -560,4 +598,49 @@ def _parse_embedded_projections(items: Any) -> list[ProjectionOption]:
             )
         )
     return out
+
+
+def _parse_formats_by_projection(
+    item: dict[str, Any],
+    *,
+    formats: list[FormatOption],
+    projections: list[ProjectionOption],
+) -> dict[str, frozenset[str]]:
+    raw_projections = item.get("projections") or item.get("Projections") or []
+    if not isinstance(raw_projections, list):
+        raw_projections = []
+
+    flat_keys = {format_key(f) for f in formats}
+    result: dict[str, set[str]] = {}
+    has_nested_formats = False
+
+    for projection in raw_projections:
+        if not isinstance(projection, dict):
+            continue
+        code = projection.get("code") or projection.get("Code")
+        if not code:
+            continue
+        code = str(code)
+        nested = projection.get("formats") or projection.get("Formats") or []
+        if isinstance(nested, list) and nested:
+            has_nested_formats = True
+            keys = {
+                _format_name_key(fmt.get("name") or fmt.get("Name"))
+                for fmt in nested
+                if isinstance(fmt, dict) and (fmt.get("name") or fmt.get("Name"))
+            }
+            result.setdefault(code, set()).update(keys)
+        else:
+            result.setdefault(code, set())
+
+    if has_nested_formats:
+        for code, keys in list(result.items()):
+            if not keys and flat_keys:
+                result[code] = set(flat_keys)
+        return {code: frozenset(keys) for code, keys in result.items() if keys}
+
+    if projections and flat_keys:
+        return {p.code: frozenset(flat_keys) for p in projections}
+
+    return {}
 

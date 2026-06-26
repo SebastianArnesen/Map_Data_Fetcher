@@ -65,7 +65,15 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
-from app.dialogs import themed_message_box
+from app.compatibility_ui import (
+    CompatibilityState,
+    area_list_state,
+    compute_compatibility,
+    format_list_state,
+    incompatible_selection_reasons,
+    projection_list_state,
+)
+from app.dialogs import themed_message_box, themed_scrollable_message_dialog
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
 from app.map_picker import MapPickerWidget, fetch_text, parse_geojson_grid_cells
@@ -118,6 +126,7 @@ from geonorge.map_selection import (
     infer_source_epsg,
     resolve_map_selection_layer,
 )
+from geonorge.compatibility import area_supports
 from geonorge.models import (
     AreaOption,
     AreaType,
@@ -166,6 +175,8 @@ _REFRESH_AREA_CHECK = frozenset(
 _REFRESH_DATASET = frozenset(
     {"categories", "datasets", "areas", "area_types", "projections", "formats", "selected", "download"}
 )
+# During bulk enrichment without a selected dataset, refresh browse filter panels only.
+_REFRESH_BROWSE_FILTERS = frozenset({"area_types", "areas", "projections", "formats"})
 
 # Right-aligned action cluster in Selected rows (copy + link + row X).
 _SELECTED_ROW_ACTIONS_WIDTH = 90
@@ -213,6 +224,15 @@ def _format_filter_key(fmt: FormatOption) -> str:
 
 def _status_message(*parts: str) -> str:
     return _STATUS_SEPARATOR.join(parts)
+
+
+def _filter_panel_count_text(*, selectable: int, total: int) -> str:
+    """Header counter: (total) or (selectable / total) when some rows are disabled."""
+    if total <= 0:
+        return ""
+    if selectable < total:
+        return f"({selectable:,} / {total:,})"
+    return f"({total:,})"
 
 
 def _check_state_value(state: object) -> int:
@@ -745,6 +765,7 @@ class MainWindow(QMainWindow):
         self._category_signature: tuple[str, ...] = ()
         self._area_types_signature: tuple[AreaType, ...] = ()
         self._area_all_previous_state = Qt.Unchecked
+        self._compatibility_state = CompatibilityState()
         self._area_map_load_generation = 0
         self._map_grid_pool: QThreadPool | None = None
         self._area_map_reload_pending = False
@@ -1244,7 +1265,12 @@ class MainWindow(QMainWindow):
         self.download_button.setCursor(Qt.PointingHandCursor)
         self.download_button.setEnabled(False)
         self.download_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.selected_warning_label = QLabel()
+        self.selected_warning_label.setObjectName("selectedWarningLabel")
+        self.selected_warning_label.setWordWrap(True)
+        self.selected_warning_label.hide()
         selected_column_layout.addWidget(self.selected_panel, 1)
+        selected_column_layout.addWidget(self.selected_warning_label, 0)
         selected_column_layout.addWidget(self.download_button, 0)
 
         for column in (projection_column, format_column, selected_column):
@@ -1679,7 +1705,7 @@ class MainWindow(QMainWindow):
         if not hasattr(view, "indexAt"):
             return
         index = view.indexAt(pos)
-        clickable = index.isValid()
+        clickable = index.isValid() and self._list_index_is_interactive(view, index)
         if view is self.dataset_view:
             clickable = index.isValid() and index.column() in (
                 DATASET_COL_TITLE,
@@ -1687,6 +1713,19 @@ class MainWindow(QMainWindow):
                 DATASET_COL_LINK,
             )
         view.viewport().setCursor(Qt.PointingHandCursor if clickable else Qt.ArrowCursor)
+
+    def _list_index_is_interactive(self, view, index) -> bool:
+        if not index.isValid():
+            return False
+        model = view.model()
+        if model is None:
+            return False
+        if hasattr(model, "is_row_disabled"):
+            return not model.is_row_disabled(index.row())
+        if hasattr(model, "item"):
+            item = model.item(index.row())
+            return item is not None and item.isEnabled()
+        return True
 
     def _handle_dataset_hover(self, pos) -> None:
         index = self.dataset_view.indexAt(pos)
@@ -1816,7 +1855,7 @@ class MainWindow(QMainWindow):
         root = root or self
         for widget in root.findChildren(QWidget):
             if isinstance(widget, (QPushButton, QToolButton, QRadioButton, QCheckBox)):
-                widget.setCursor(Qt.PointingHandCursor)
+                widget.setCursor(Qt.PointingHandCursor if widget.isEnabled() else Qt.ArrowCursor)
         self.dataset_search.setCursor(Qt.IBeamCursor)
         self.area_search.setCursor(Qt.IBeamCursor)
 
@@ -1853,11 +1892,13 @@ class MainWindow(QMainWindow):
         *,
         truncated: bool,
         filtered_total: int,
+        disabled_keys: set[str] | None = None,
     ) -> tuple:
         ds_key = self._selected_dataset.metadata_uuid if self._selected_dataset else ""
+        disabled_part = tuple(sorted(disabled_keys or []))
         if truncated:
-            return ("truncated", ds_key, area_type, filtered_total, self._area_search_text)
-        return ("full", ds_key, area_type, tuple((a.code, a.name) for a in display_areas))
+            return ("truncated", ds_key, area_type, filtered_total, self._area_search_text, disabled_part)
+        return ("full", ds_key, area_type, tuple((a.code, a.name) for a in display_areas), disabled_part)
 
     def _set_area_search_text(self, text: str) -> None:
         normalized = text.strip()
@@ -2030,6 +2071,38 @@ class MainWindow(QMainWindow):
             return list(self._selected_areas)
         return list(self._auto_areas)
 
+    def _dataset_compatibility_mode(self) -> bool:
+        return self._selected_dataset is not None
+
+    def _compute_compatibility(self, *, for_ui: bool = True) -> CompatibilityState:
+        """Cross-filter lists using user selections only; download uses effective (incl. auto)."""
+        if for_ui:
+            selected_areas = list(self._selected_areas)
+            projection = self._selected_projection
+            fmt = self._selected_format
+        else:
+            selected_areas = self._effective_areas()
+            projection = self._effective_projection()
+            fmt = self._effective_format()
+        return compute_compatibility(
+            self._selected_dataset,
+            area_type=self._active_area_type(),
+            selected_areas=selected_areas,
+            projection=projection,
+            fmt=fmt,
+        )
+
+    def _incompatible_selection_reasons(self) -> list[str]:
+        if not self._dataset_compatibility_mode() or not self._active_area_type():
+            return []
+        download_compat = self._compute_compatibility(for_ui=False)
+        return incompatible_selection_reasons(
+            download_compat,
+            areas=self._effective_areas(),
+            projection=self._effective_projection(),
+            fmt=self._effective_format(),
+        )
+
     def _clear_all_auto_selections(self) -> None:
         self._auto_projection = None
         self._auto_format = None
@@ -2065,6 +2138,8 @@ class MainWindow(QMainWindow):
             return False
         all_areas = self._sort_areas(self._candidate_areas(area_type))
         areas = self._filter_areas_by_search(all_areas)
+        if self._dataset_compatibility_mode():
+            areas = [a for a in areas if self._compatibility_state.area_enabled(a)]
         if len(areas) != 1:
             self._auto_areas = []
             self._auto_area_codes = set()
@@ -2337,6 +2412,13 @@ class MainWindow(QMainWindow):
     def _sync_area_map_selection(self) -> None:
         if not self._area_map_is_open():
             return
+        if self._dataset_compatibility_mode():
+            compat = self._compatibility_state
+            all_codes = {a.code for a in self._candidate_areas("celle")}
+            disabled = {code for code in all_codes if code not in compat.enabled_area_codes}
+            self.area_map_picker.canvas.set_disabled_codes(disabled)
+        else:
+            self.area_map_picker.canvas.set_disabled_codes(set())
         self.area_map_picker.canvas.set_selected_codes({a.code for a in self._selected_areas})
 
     def _close_area_map_if_inappropriate(self) -> None:
@@ -2372,6 +2454,8 @@ class MainWindow(QMainWindow):
 
     def _on_area_map_toggled(self, code: str, selected: bool) -> None:
         if self._active_area_type() != "celle":
+            return
+        if self._dataset_compatibility_mode() and code not in self._compatibility_state.enabled_area_codes:
             return
         candidates = {a.code: a for a in self._candidate_areas("celle")}
         if selected:
@@ -2623,7 +2707,7 @@ class MainWindow(QMainWindow):
                 mask = self._compose_filter_mask(ignore={"areas"})
                 valid_codes = index.area_codes_for_mask(self._selected_area_type, mask)
             self._selected_areas = [a for a in self._selected_areas if a.code in valid_codes]
-        else:
+        elif not self._auto_area_type:
             self._selected_areas = []
         if self._selected_projection:
             if not any(p.code == self._selected_projection.code for p in self._candidate_projections()):
@@ -2654,6 +2738,19 @@ class MainWindow(QMainWindow):
                 valid_codes = index.area_codes_for_mask(self._auto_area_type, mask)
             self._auto_areas = [a for a in self._auto_areas if a.code in valid_codes]
             self._auto_area_codes = {a.code for a in self._auto_areas}
+
+    def _sync_compatibility_state(self) -> None:
+        """Recompute list cross-filters from explicit user selections (not auto-selections)."""
+        self._compatibility_state = self._compute_compatibility(for_ui=True)
+        if not self._dataset_compatibility_mode() or not self._active_area_type():
+            return
+        compat = self._compatibility_state
+        if self._selected_projection and not compat.projection_enabled(self._selected_projection):
+            self._selected_projection = None
+        if self._selected_format and not compat.format_enabled(self._selected_format):
+            self._selected_format = None
+        enabled_area_codes = compat.enabled_area_codes
+        self._selected_areas = [a for a in self._selected_areas if a.code in enabled_area_codes]
 
     def _begin_filter_panel_busy(self) -> None:
         cancel_pending_tooltips()
@@ -2692,15 +2789,21 @@ class MainWindow(QMainWindow):
         try:
             if self._profile_ui:
                 logger.info("UI recompute start scope=%s refresh=%s", scope, ",".join(sorted(refresh)))
+            if self._selected_dataset:
+                self._populate_area_type_list()
             self._validate_selections()
             if "categories" in refresh:
                 self._populate_categories()
             if "datasets" in refresh:
                 self._apply_dataset_filter()
-            if "area_types" in refresh:
+            if "area_types" in refresh and not self._selected_dataset:
                 self._populate_area_type_list()
+            if refresh.intersection({"areas", "projections", "formats", "selected", "download"}):
+                self._sync_compatibility_state()
             if "areas" in refresh and not self._area_map_is_open():
                 self._populate_areas_for_type(self._active_area_type(), preserve_selection=True)
+            if refresh.intersection({"projections", "formats", "selected", "download"}):
+                self._sync_compatibility_state()
             if "projections" in refresh:
                 self._populate_projections()
             if "formats" in refresh:
@@ -2741,7 +2844,8 @@ class MainWindow(QMainWindow):
             self._recompute_scope = scope
         if self._recompute_timer.isActive():
             delay_ms = max(delay_ms, 80 if scope == "full" else 120)
-        if self._filter_busy_depth == 0 and scope == "full":
+        # Keep filter panels interactive while background metadata enrichment runs.
+        if self._filter_busy_depth == 0 and scope == "full" and not self._bulk_enrichment:
             self._begin_filter_panel_busy()
         self._recompute_timer.start(max(0, delay_ms))
 
@@ -2789,6 +2893,7 @@ class MainWindow(QMainWindow):
         self,
         title: str,
         *,
+        count: int | None = None,
         on_clear_all: object | None = None,
         add_top_gap: bool = False,
     ) -> None:
@@ -2800,10 +2905,20 @@ class MainWindow(QMainWindow):
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 4, 0, 2)
         row_layout.setSpacing(6)
-        label = ElidedLabel(title)
+        title_host = QWidget()
+        title_layout = QHBoxLayout(title_host)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(6)
+        label = SelectableLabel(title)
         label.setObjectName("selectedPanelGroupHeader")
         label.setToolTip(title)
-        row_layout.addWidget(label, 1)
+        title_layout.addWidget(label, 0)
+        if count is not None:
+            count_label = SelectableLabel(f"({count:,})")
+            count_label.setObjectName("secondaryHeaderLabel")
+            title_layout.addWidget(count_label, 0)
+        title_layout.addStretch(1)
+        row_layout.addWidget(title_host, 1)
         if on_clear_all is not None:
             actions = QWidget()
             actions.setFixedWidth(_SELECTED_ROW_ACTIONS_WIDTH)
@@ -2962,6 +3077,7 @@ class MainWindow(QMainWindow):
             categories = sorted(self._selected_categories, key=_norwegian_sort_key)
             self._add_selected_group_header(
                 "Categories",
+                count=len(categories),
                 add_top_gap=not first_group,
                 on_clear_all=self._clear_all_selected_categories
                 if len(categories) >= 2
@@ -2998,6 +3114,7 @@ class MainWindow(QMainWindow):
             user_only_count = len(self._selected_areas)
             self._add_selected_group_header(
                 "Areas",
+                count=len(panel_areas),
                 add_top_gap=not first_group,
                 on_clear_all=self._clear_all_selected_areas if user_only_count >= 2 else None,
             )
@@ -3072,6 +3189,13 @@ class MainWindow(QMainWindow):
             has_items = True
 
         self.clear_all_selections_button.setVisible(has_items)
+        incompatible = self._incompatible_selection_reasons()
+        if incompatible:
+            self.selected_warning_label.setText(incompatible[0])
+            self.selected_warning_label.show()
+        else:
+            self.selected_warning_label.clear()
+            self.selected_warning_label.hide()
         if not has_items:
             none_label = ElidedLabel("None")
             none_label.setObjectName("selectedDatasetValue")
@@ -3212,7 +3336,7 @@ class MainWindow(QMainWindow):
         self._reconcile_area_search_with_candidates(all_areas)
         if area_type == "landsdekkende":
             total = len(all_areas)
-            self.area_count_label.setText(f"({total:,})" if total else "")
+            self.area_count_label.setText(_filter_panel_count_text(selectable=total, total=total) if total else "")
             self.area_label.setText("Areas")
             signature: object = ("landsdekkende", total)
             previous_signature = self._area_signature
@@ -3248,19 +3372,28 @@ class MainWindow(QMainWindow):
         self._area_display_name_only = self._area_table_name_only(area_type, all_areas)
         areas = self._filter_areas_by_search(all_areas)
         total_areas = len(areas)
-        self.area_count_label.setText(f"({total_areas:,})")
-        truncated = total_areas > _AREA_TABLE_ROW_LIMIT
-        if truncated:
-            self.area_label.setText("Areas")
-            display_areas = areas[:_AREA_TABLE_ROW_LIMIT]
-        else:
-            self.area_label.setText("Areas")
+        if self._selected_dataset:
+            truncated = False
             display_areas = areas
+        else:
+            truncated = total_areas > _AREA_TABLE_ROW_LIMIT
+            display_areas = areas[:_AREA_TABLE_ROW_LIMIT] if truncated else areas
+        compat = self._compatibility_state
+        dataset_mode = self._dataset_compatibility_mode()
+        area_state = area_list_state(compat, display_areas, dataset_mode=dataset_mode)
+        disabled_keys = area_state.disabled_keys
+        total_present = len(display_areas)
+        selectable_present = total_present - len(disabled_keys)
+        self.area_count_label.setText(
+            _filter_panel_count_text(selectable=selectable_present, total=total_present)
+        )
+        area_tooltips = area_state.tooltips
         signature = self._area_list_content_signature(
             area_type,
             display_areas,
             truncated=truncated,
             filtered_total=total_areas,
+            disabled_keys=disabled_keys if dataset_mode else None,
         )
         previous_signature = self._area_signature
         if preserve_selection and signature == previous_signature:
@@ -3279,6 +3412,8 @@ class MainWindow(QMainWindow):
             self.area_model.set_items(
                 items,
                 name_only=self._area_display_name_only,
+                disabled_keys=disabled_keys,
+                tooltips=area_tooltips,
                 notify=False,
             )
             if usable_keys:
@@ -3287,9 +3422,27 @@ class MainWindow(QMainWindow):
                 self._auto_areas = []
             elif signature != previous_signature and len(items) == 1 and not self._selected_areas:
                 single = display_areas[0]
-                self._auto_areas = [single]
-                self._auto_area_codes = {single.code}
+                if not dataset_mode or compat.area_enabled(single):
+                    self._auto_areas = [single]
+                    self._auto_area_codes = {single.code}
+                else:
+                    self._auto_areas = []
+                    self._auto_area_codes = set()
                 self.area_model.set_checked_keys(set())
+            elif signature != previous_signature and dataset_mode and not self._selected_areas:
+                enabled_areas = [a for a in display_areas if compat.area_enabled(a)]
+                if len(enabled_areas) == 1:
+                    single = enabled_areas[0]
+                    self._auto_areas = [single]
+                    self._auto_area_codes = {single.code}
+                    self.area_model.set_checked_keys(set())
+                else:
+                    self._auto_area_codes = set()
+                    self._auto_areas = []
+            elif signature != previous_signature:
+                self._auto_area_codes = set()
+                if not self._selected_areas:
+                    self._auto_areas = []
             else:
                 self._auto_area_codes = set()
                 if not self._selected_areas:
@@ -3394,26 +3547,33 @@ class MainWindow(QMainWindow):
 
     def _populate_projections(self) -> None:
         candidates = self._candidate_projections()
-        self.projection_count_label.setText(f"({len(candidates):,})")
-        signature = tuple(p.code for p in candidates)
+        compat = self._compatibility_state
+        dataset_mode = self._dataset_compatibility_mode()
+        state = projection_list_state(compat, candidates, dataset_mode=dataset_mode)
+        total = len(candidates)
+        selectable = total - len(state.disabled_payload_ids)
+        self.projection_count_label.setText(
+            _filter_panel_count_text(selectable=selectable, total=total)
+        )
         previous_signature = self._projection_signature
-        self._projection_signature = signature
 
         selection = self.projection_view.selectionModel()
         was_blocked = selection.blockSignals(True)
         self._suppress_single_select_change = True
         try:
-            if signature != previous_signature:
+            if state.content_signature != previous_signature:
                 self._auto_projection = None
                 self.projection_model.set_items(
                     [((p.name.strip() if p.name and p.name.strip() else p.code), p) for p in candidates],
-                    tooltips_by_id={id(p): p.label for p in candidates},
+                    disabled_payload_ids=state.disabled_payload_ids,
+                    tooltips_by_id=state.tooltips_by_id,
                 )
+            self._projection_signature = state.content_signature
             self._reapply_projection_selection(candidates)
             if self._selected_projection:
                 self._auto_projection = None
-            elif len(candidates) == 1:
-                self._auto_projection = candidates[0]
+            elif state.auto_select is not None:
+                self._auto_projection = state.auto_select
             else:
                 self._auto_projection = None
         finally:
@@ -3424,23 +3584,38 @@ class MainWindow(QMainWindow):
 
     def _populate_formats(self) -> None:
         candidates = self._candidate_formats()
-        self.format_count_label.setText(f"({len(candidates):,})")
-        signature = tuple(_format_filter_key(f) for f in candidates)
+        compat = self._compatibility_state
+        dataset_mode = self._dataset_compatibility_mode()
+        state = format_list_state(
+            compat,
+            candidates,
+            dataset_mode=dataset_mode,
+            format_key_fn=_format_filter_key,
+        )
+        total = len(candidates)
+        selectable = total - len(state.disabled_payload_ids)
+        self.format_count_label.setText(
+            _filter_panel_count_text(selectable=selectable, total=total)
+        )
         previous_signature = self._format_signature
-        self._format_signature = signature
 
         selection = self.format_view.selectionModel()
         was_blocked = selection.blockSignals(True)
         self._suppress_single_select_change = True
         try:
-            if signature != previous_signature:
+            if state.content_signature != previous_signature:
                 self._auto_format = None
-                self.format_model.set_items([(f.label, f) for f in candidates])
+                self.format_model.set_items(
+                    [(f.label, f) for f in candidates],
+                    disabled_payload_ids=state.disabled_payload_ids,
+                    tooltips_by_id=state.tooltips_by_id,
+                )
+            self._format_signature = state.content_signature
             self._reapply_format_selection(candidates)
             if self._selected_format:
                 self._auto_format = None
-            elif len(candidates) == 1:
-                self._auto_format = candidates[0]
+            elif state.auto_select is not None:
+                self._auto_format = state.auto_select
             else:
                 self._auto_format = None
         finally:
@@ -3522,6 +3697,7 @@ class MainWindow(QMainWindow):
                 reasons.append("Select a projection.")
         if not self._effective_format():
             reasons.append("Select a format.")
+        reasons.extend(self._incompatible_selection_reasons())
 
         clickable = not reasons
         self.download_button.setEnabled(clickable)
@@ -3718,10 +3894,18 @@ class MainWindow(QMainWindow):
         try:
             state = self.area_model.aggregate_check_state()
             self.area_all_checkbox.setCheckState(state)
-            self.area_all_checkbox.setEnabled(self.area_model.rowCount() > 0)
-            self.area_all_checkbox.setToolTip(
-                "Unselect all" if _check_state_value(state) == int(Qt.Checked.value) else "Select all"
+            enabled_count = self.area_model.enabled_row_count()
+            self.area_all_checkbox.setEnabled(enabled_count > 0)
+            self.area_all_checkbox.setCursor(
+                Qt.PointingHandCursor if enabled_count > 0 else Qt.ArrowCursor
             )
+            if enabled_count == 0:
+                tip = "Select all"
+            elif _check_state_value(state) == int(Qt.Checked.value):
+                tip = "Unselect all enabled areas"
+            else:
+                tip = "Select all enabled areas"
+            self.area_all_checkbox.setToolTip(tip)
             self.area_all_checkbox.update()
         finally:
             self.area_all_checkbox.blockSignals(False)
@@ -3742,6 +3926,8 @@ class MainWindow(QMainWindow):
         if not index.isValid():
             return
         if index.column() == 0:
+            return
+        if self.area_model.is_row_disabled(index.row()):
             return
         check_item = self.area_model.item(index.row(), 0)
         if not check_item or not check_item.isCheckable():
@@ -3925,7 +4111,7 @@ class MainWindow(QMainWindow):
         self._auto_projection = None
         self.projection_view.viewport().update()
         self._update_selected_panel()
-        self._update_download_button_state()
+        self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
 
     def _clear_auto_format(self, checked: bool = False) -> None:
         del checked
@@ -3934,7 +4120,7 @@ class MainWindow(QMainWindow):
         self._auto_format = None
         self.format_view.viewport().update()
         self._update_selected_panel()
-        self._update_download_button_state()
+        self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
 
     def _clear_auto_area_one(self, area: AreaOption) -> None:
         self._auto_areas = [a for a in self._auto_areas if a.code != area.code]
@@ -4038,6 +4224,9 @@ class MainWindow(QMainWindow):
     def _select_projection_index(self, index, *, toggle: bool = False) -> None:
         if self._recompute_running:
             return
+        item = self.projection_model.item(index.row())
+        if item is not None and not item.isEnabled():
+            return
         p = self.projection_model.selected_payload(index)
         if not isinstance(p, ProjectionOption):
             return
@@ -4053,7 +4242,7 @@ class MainWindow(QMainWindow):
             self._reapply_projection_selection(candidates)
             self._reset_dataset_page()
             self._update_selected_panel()
-            self._update_download_button_state()
+            self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
             self.projection_view.viewport().update()
             return
         if toggle and self._auto_projection and not self._selected_projection and self._auto_projection.code == p.code:
@@ -4078,6 +4267,9 @@ class MainWindow(QMainWindow):
     def _select_format_index(self, index, *, toggle: bool = False) -> None:
         if self._recompute_running:
             return
+        item = self.format_model.item(index.row())
+        if item is not None and not item.isEnabled():
+            return
         fmt = self.format_model.selected_payload(index)
         if not isinstance(fmt, FormatOption):
             return
@@ -4094,7 +4286,7 @@ class MainWindow(QMainWindow):
             self._reapply_format_selection(candidates)
             self._reset_dataset_page()
             self._update_selected_panel()
-            self._update_download_button_state()
+            self._schedule_recompute_lists(0, refresh=_REFRESH_FILTER_IMPACT)
             self.format_view.viewport().update()
             return
         if toggle and self._auto_format and not self._selected_format and _format_filter_key(self._auto_format) == target:
@@ -4181,7 +4373,12 @@ class MainWindow(QMainWindow):
                 area_code = a.code if a else None
                 if "worker" in holder:
                     holder["worker"].signals.progress.emit(0, 0, f"Preparing {area_label}…")
-                # Preflight + interactive fallback for "this area can't be produced with this format".
+                if a and not area_supports(
+                    a,
+                    projection_code=projection_code,
+                    format_name=fmt.name,
+                ):
+                    raise RuntimeError(f"{area_label}: Not available with the selected projection and format.")
                 while True:
                     ok, reason = self._nedlasting.validate_area_format_projection(
                         metadata_uuid=ds.metadata_uuid,
@@ -4190,6 +4387,7 @@ class MainWindow(QMainWindow):
                         format_name=fmt.name,
                         projection_code=projection_code,
                         base_url=ds.download_api_base,
+                        area_option=a,
                     )
                     if not ok:
                         raise RuntimeError(f"{area_label}: {reason or 'Not available.'}")
@@ -4246,17 +4444,26 @@ class MainWindow(QMainWindow):
             self._download_progress_dialog.mark_all_complete()
         self._close_download_progress_dialog()
         self._set_status("Download complete.")
-        if isinstance(results, list):
-            msg = "\n".join([f"{area_label}: {path}" for area_label, path in results])
-        else:
-            msg = "Done."
-        box = themed_message_box(
-            self,
-            title="Download complete",
-            text=msg,
-            icon="success",
-        )
-        box.exec()
+        if isinstance(results, list) and results:
+            count = len(results)
+            folder = str(Path(results[0][1]).parent)
+            body = "\n".join(f"{area_label}: {path}" for area_label, path in results)
+            dialog = themed_scrollable_message_dialog(
+                self,
+                title="Download complete",
+                heading=f"Downloaded {count} file{'s' if count != 1 else ''}.",
+                subtitle=folder,
+                body=body,
+                icon="success",
+            )
+            dialog.exec()
+        elif isinstance(results, list):
+            themed_message_box(
+                self,
+                title="Download complete",
+                text="Done.",
+                icon="success",
+            ).exec()
 
     def _on_download_progress(self, done: int, total: int, message: str) -> None:
         logger.debug("Download progress %s/%s: %s", done, total, message)
@@ -4290,9 +4497,26 @@ class MainWindow(QMainWindow):
         area_type = self._active_area_type()
 
         for a in list(areas_eff):
+            if not area_supports(
+                a,
+                projection_code=projection_code,
+                format_name=current_format.name,
+            ):
+                continue
             fmt = current_format
             while True:
                 try:
+                    ok, reason = self._nedlasting.validate_area_format_projection(
+                        metadata_uuid=ds.metadata_uuid,
+                        area_type=area_type,
+                        area_code=a.code,
+                        format_name=fmt.name,
+                        projection_code=projection_code,
+                        base_url=ds.download_api_base,
+                        area_option=a,
+                    )
+                    if not ok:
+                        raise RuntimeError(reason or "Not available.")
                     ref = self._nedlasting.place_order(
                         metadata_uuid=ds.metadata_uuid,
                         area_type=area_type,
@@ -4462,6 +4686,12 @@ class MainWindow(QMainWindow):
             else:
                 self._datasets[index] = item
             self._invalidate_filter_index()
+            if not self._selected_dataset:
+                self._schedule_recompute_lists(
+                    800,
+                    scope="browse",
+                    refresh=_REFRESH_BROWSE_FILTERS,
+                )
             return
         index = self._dataset_index_by_uuid.get(item.metadata_uuid)
         if index is None:
