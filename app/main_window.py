@@ -14,8 +14,8 @@ from PySide6.QtCore import (
     QItemSelectionModel,
     QModelIndex,
     QPoint,
-    QRectF,
     QPointF,
+    QRectF,
     QSettings,
     QSize,
     Qt,
@@ -66,6 +66,13 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
+from app.area_map_expand import (
+    ExpandedAreaMapWindow,
+    MapExpandButton,
+    MapZoomInButton,
+    MapZoomOutButton,
+    expanded_map_window_geometry,
+)
 from app.compatibility_ui import (
     CompatibilityState,
     area_list_state,
@@ -78,13 +85,6 @@ from app.dialogs import themed_message_box, themed_scrollable_message_dialog
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
 from app.map_picker import MapPickerWidget, fetch_text, parse_geojson_grid_cells
-from app.area_map_expand import (
-    ExpandedAreaMapWindow,
-    MapExpandButton,
-    MapZoomInButton,
-    MapZoomOutButton,
-    expanded_map_window_geometry,
-)
 from app.models_qt import (
     DATASET_COL_COPY,
     DATASET_COL_LINK,
@@ -128,13 +128,13 @@ from app.tooltip_delay import cancel_pending_tooltips
 from app.updates import build_latest_release_web_url, fetch_latest_release, is_newer_version
 from app.workers import FuncWorker, connect_worker_signals
 from geonorge.client import HttpClient
+from geonorge.compatibility import area_supports
 from geonorge.discovery import DiscoveryService
 from geonorge.map_selection import (
     geojson_url_for_map_selection_layer,
     infer_source_epsg,
     resolve_map_selection_layer,
 )
-from geonorge.compatibility import area_supports
 from geonorge.models import (
     AreaOption,
     AreaType,

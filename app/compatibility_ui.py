@@ -171,7 +171,6 @@ def compute_compatibility(
     # area in the dataset (union). With picks, require compatibility with all of them.
     reference_areas = selected_areas if selected_areas else state.all_areas
     use_union = not selected_areas
-    total_selected = len(selected_areas)
 
     state.enabled_projection_codes = enabled_projection_codes(
         reference_areas,

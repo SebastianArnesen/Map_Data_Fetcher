@@ -11,7 +11,12 @@ from geonorge.compatibility import (
     projection_disabled_reason,
 )
 from geonorge.models import AreaOption, FormatOption, ProjectionOption
-from geonorge.nedlasting import _area_option_from_dict, _merge_formats_by_projection, _parse_areas_payload, _parse_formats_by_projection
+from geonorge.nedlasting import (
+    _area_option_from_dict,
+    _merge_formats_by_projection,
+    _parse_areas_payload,
+    _parse_formats_by_projection,
+)
 
 
 def _area(
