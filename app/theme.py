@@ -672,6 +672,7 @@ def build_stylesheet(c: ThemeColors, *, ui_scale: float | None = None) -> str:
         QScrollArea#selectedScroll {{ background: {c.card_bg}; border: none; }}
         QWidget#selectedScrollViewport, QWidget#selectedRowsHost {{ background: {c.card_bg}; }}
         QWidget#selectedDatasetCopyCell {{ background: transparent; }}
+        QWidget#datasetHeaderCopyCell {{ background: transparent; }}
         QListView[filterBusy="true"], QTreeView[filterBusy="true"], QLineEdit[filterBusy="true"],
         QFrame[filterBusy="true"], QWidget[filterBusy="true"] {{
             background-color: {c.busy_widget_bg};

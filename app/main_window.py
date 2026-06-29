@@ -1093,6 +1093,11 @@ class MainWindow(QMainWindow):
         dataset_header_layout.setContentsMargins(0, 0, 0, 0)
         dataset_header_layout.setSpacing(6)
         self.dataset_label = SelectableLabel("Datasets")
+        self.dataset_header_copy_widget = ClipboardCopyWidget(owner=self)
+        self.dataset_header_copy_widget.setObjectName("datasetHeaderCopyCell")
+        self.dataset_header_copy_widget.setToolTip("Copy...")
+        self.dataset_header_copy_widget.setEnabled(False)
+        self.dataset_header_copy_widget.installEventFilter(self)
         self.dataset_count_label = SelectableLabel("(0)")
         self.dataset_count_label.setObjectName("secondaryHeaderLabel")
         self.dataset_page_label = SelectableLabel("")
@@ -1101,6 +1106,7 @@ class MainWindow(QMainWindow):
         self.dataset_next_button = PagerButton("next")
         dataset_header_layout.addWidget(self.dataset_label)
         dataset_header_layout.addWidget(self.dataset_count_label)
+        dataset_header_layout.addWidget(self.dataset_header_copy_widget)
         dataset_header_layout.addSpacing(10)
         dataset_header_layout.addWidget(self.downloadable_filter, 0)
         dataset_header_layout.addStretch(1)
@@ -1413,6 +1419,23 @@ class MainWindow(QMainWindow):
         if hasattr(self, "dataset_view"):
             self.dataset_view.viewport().update()
         self._apply_toolbar_fixed_fonts()
+        self._apply_clickable_cursors(self)
+        self._refresh_text_scale_button_cursors()
+
+    def _refresh_text_scale_button_cursors(self) -> None:
+        """Re-apply pointing-hand cursor after scale toggle (stylesheet + enable swap)."""
+        for button in (
+            getattr(self, "text_scale_normal_button", None),
+            getattr(self, "text_scale_large_button", None),
+        ):
+            if button is None:
+                continue
+            cursor = Qt.PointingHandCursor if button.isEnabled() else Qt.ArrowCursor
+            button.setCursor(cursor)
+            if button.underMouse():
+                # Qt may keep the old cursor until the pointer leaves and re-enters.
+                button.unsetCursor()
+                button.setCursor(cursor)
 
     def _apply_toolbar_fixed_fonts(self) -> None:
         """Top toolbar stays at a fixed size regardless of ui/text_scale."""
@@ -1684,7 +1707,19 @@ class MainWindow(QMainWindow):
                 self._show_selected_dataset_copy_menu()
             return True
 
+        header_copy = getattr(self, "dataset_header_copy_widget", None)
+        if header_copy is not None and obj is header_copy and event.type() == QEvent.MouseButtonPress:
+            if header_copy.isEnabled():
+                self._show_datasets_header_copy_menu()
+            return True
+
         if selected_copy is not None and obj is selected_copy:
+            if event.type() == QEvent.Enter:
+                self._copy_menu_close_timer.stop()
+            elif event.type() == QEvent.Leave:
+                self._copy_menu_close_timer.start(2000)
+
+        if header_copy is not None and obj is header_copy:
             if event.type() == QEvent.Enter:
                 self._copy_menu_close_timer.stop()
             elif event.type() == QEvent.Leave:
@@ -1794,6 +1829,55 @@ class MainWindow(QMainWindow):
         rect = self.selected_dataset_copy_widget.rect()
         anchor = self.selected_dataset_copy_widget.mapToGlobal(rect.topLeft())
         self._open_dataset_copy_menu(ds, source, anchor, to_left=True)
+
+    def _show_datasets_header_copy_menu(self) -> None:
+        rect = self.dataset_header_copy_widget.rect()
+        anchor = self.dataset_header_copy_widget.mapToGlobal(rect.topLeft())
+        self._open_datasets_list_copy_menu(anchor)
+
+    def _open_datasets_list_copy_menu(self, anchor_global: QPoint) -> None:
+        source_key = "datasets_header"
+        if self._dataset_copy_menu is not None and self._dataset_copy_menu.isVisible():
+            if self._dataset_copy_menu_source == source_key:
+                self._dataset_copy_menu.close()
+                return
+            self._dataset_copy_menu.close()
+        datasets = self._filtered_datasets()
+        menu = QMenu(self)
+        menu.installEventFilter(self)
+        menu.setCursor(Qt.PointingHandCursor)
+        menu.setToolTipsVisible(True)
+        menu.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
+        titles_action = menu.addAction("Titles")
+        titles_action.setToolTip("Copy titles to clipboard")
+        uuids_action = menu.addAction("UUIDs")
+        uuids_action.setToolTip("Copy UUIDs to clipboard")
+        combined_action = menu.addAction("Titles (UUIDs)")
+        combined_action.setToolTip("Copy titles and UUIDs to clipboard")
+        titles_action.triggered.connect(
+            lambda _checked=False, items=datasets: self._copy_text_to_clipboard(
+                "\n".join(ds.title for ds in items),
+                "Copied titles.",
+            )
+        )
+        uuids_action.triggered.connect(
+            lambda _checked=False, items=datasets: self._copy_text_to_clipboard(
+                "\n".join(ds.metadata_uuid for ds in items),
+                "Copied UUIDs.",
+            )
+        )
+        combined_action.triggered.connect(
+            lambda _checked=False, items=datasets: self._copy_text_to_clipboard(
+                "\n".join(f"{ds.title} ({ds.metadata_uuid})" for ds in items),
+                "Copied titles and UUIDs.",
+            )
+        )
+        menu.aboutToHide.connect(self._on_dataset_copy_menu_hidden)
+        self._dataset_copy_menu = menu
+        self._dataset_copy_menu_source = source_key
+        menu.ensurePolished()
+        menu.popup(anchor_global)
+        self._copy_menu_close_timer.start(2000)
 
     def _open_dataset_copy_menu(
         self,
@@ -3596,17 +3680,20 @@ class MainWindow(QMainWindow):
             return sorted(areas, key=lambda a: _code_sort_key(a.code), reverse=reverse)
         return sorted(areas, key=lambda a: (_norwegian_sort_key(a.name), _code_sort_key(a.code)), reverse=reverse)
 
-    def _apply_dataset_filter(self) -> None:
-        clear_dataset_index_widgets(self.dataset_view)
+    def _filtered_datasets(self) -> list[DatasetAvailability]:
         index = self._ensure_filter_index()
         mask = self._compose_filter_mask(ignore={"dataset"})
+        filtered: list[DatasetAvailability] = list(self._login_required_datasets)
+        filtered.extend(index.datasets_for_mask(mask))
+        filtered.sort(key=lambda d: _norwegian_sort_key(d.title))
+        return filtered
+
+    def _apply_dataset_filter(self) -> None:
+        clear_dataset_index_widgets(self.dataset_view)
         scroll_value = self.dataset_view.verticalScrollBar().value()
 
-        filtered: list[DatasetAvailability] = list(self._login_required_datasets)
+        filtered = self._filtered_datasets()
         disabled_ids = {id(ds) for ds in self._login_required_datasets}
-        filtered.extend(index.datasets_for_mask(mask))
-
-        filtered.sort(key=lambda d: _norwegian_sort_key(d.title))
         self._dataset_total_rows = len(filtered)
         page_count = self._dataset_page_count()
         if self._dataset_page >= page_count:
@@ -3644,6 +3731,7 @@ class MainWindow(QMainWindow):
         self.dataset_page_label.setText(page_label)
         self.dataset_prev_button.setEnabled(self._dataset_page > 0)
         self.dataset_next_button.setEnabled(self._dataset_page < page_count - 1)
+        self.dataset_header_copy_widget.setEnabled(self._dataset_total_rows > 0)
         if signature == self._dataset_signature:
             self._displayed_dataset_uuids = [
                 payload.metadata_uuid
