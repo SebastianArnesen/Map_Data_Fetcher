@@ -84,7 +84,7 @@ from app.compatibility_ui import (
 from app.dialogs import themed_message_box, themed_scrollable_message_dialog
 from app.download_progress import DownloadProgressDialog
 from app.filter_index import DatasetFilterIndex, format_filter_key
-from app.map_picker import MapPickerWidget, fetch_text, parse_geojson_grid_cells
+from app.map_picker import MapPickerWidget, fetch_text, match_area_grid_codes, parse_geojson_grid_cells
 from app.models_qt import (
     DATASET_COL_COPY,
     DATASET_COL_LINK,
@@ -792,6 +792,7 @@ class MainWindow(QMainWindow):
         self._map_grid_pool: QThreadPool | None = None
         self._area_map_reload_pending = False
         self._area_map_pending_apply: tuple[list, int, str] | None = None
+        self._area_map_parsed: list = []
         self._area_map_expanded = False
         self._area_map_expanded_window: ExpandedAreaMapWindow | None = None
         self._area_map_closing = False
@@ -2402,6 +2403,7 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.exception("Failed to apply map grid for layer %s", layer_id)
             return
+        self._area_map_parsed = list(parsed) if isinstance(parsed, list) else []
         self._sync_area_map_selection()
         if not self.area_map_picker.canvas._grid_cells:
             logger.warning(
@@ -2609,15 +2611,30 @@ class MainWindow(QMainWindow):
         if not self._area_map_is_open():
             return
         candidate_areas = self._candidate_areas("celle")
-        self.area_map_picker.set_cell_labels({a.code: a.label for a in candidate_areas})
+        canvas = self.area_map_picker.canvas
+        maps = match_area_grid_codes(canvas._grid_cells, self._area_map_parsed, candidate_areas)
+        self.area_map_picker.set_area_grid_maps(maps)
+
+        disabled_grid: set[str] = set()
         if self._dataset_compatibility_mode():
             compat = self._compatibility_state
-            all_codes = {a.code for a in candidate_areas}
-            disabled = {code for code in all_codes if code not in compat.enabled_area_codes}
-            self.area_map_picker.canvas.set_disabled_codes(disabled)
-        else:
-            self.area_map_picker.canvas.set_disabled_codes(set())
-        self.area_map_picker.canvas.set_selected_codes({a.code for a in self._selected_areas})
+            for area in candidate_areas:
+                grid_code = maps.area_to_grid.get(area.code)
+                if grid_code is None:
+                    continue
+                if area.code not in compat.enabled_area_codes:
+                    disabled_grid.add(grid_code)
+        disabled_grid |= set(canvas._grid_cells) - set(maps.grid_to_area)
+
+        canvas.set_disabled_codes(disabled_grid)
+        canvas.set_selected_codes(
+            {
+                maps.area_to_grid[area.code]
+                for area in self._selected_areas
+                if area.code in maps.area_to_grid
+            }
+            | {area.code for area in self._selected_areas if area.code in canvas._grid_cells}
+        )
 
     def _close_area_map_if_inappropriate(self) -> None:
         if not self._area_map_is_open():
@@ -2639,6 +2656,7 @@ class MainWindow(QMainWindow):
             self._area_map_load_generation += 1
             self._area_map_reload_pending = False
             self._area_map_pending_apply = None
+            self._area_map_parsed = []
             self._wait_map_grid_workers()
             self.area_map_picker.canvas.clear_basemap_tiles()
             self.area_map_picker.canvas.set_grid_cells([])

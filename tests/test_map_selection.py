@@ -107,6 +107,58 @@ def test_geojson_url_resolution_env_override() -> None:
         os.environ.pop("GEONORGE_MAPSELECTION_GEOJSON_URL", None)
 
 
+def test_normalize_area_code_for_mgrs_strips_t_prefix() -> None:
+    pytest.importorskip("mgrs")
+    from app.map_picker import _normalize_area_code_for_mgrs
+
+    assert _normalize_area_code_for_mgrs("T33WXS") == "33WXS"
+
+
+def test_match_area_grid_codes_uses_area_name_for_label() -> None:
+    from PySide6.QtGui import QPainterPath
+
+    from app.map_picker import GridCellShape, ParsedGridCell, match_area_grid_codes
+    from geonorge.models import AreaOption
+
+    path = QPainterPath()
+    path.addRect(0, 0, 1, 1)
+    shapes = {
+        "7507-4": GridCellShape(
+            code="7507-4",
+            path_lonlat=path,
+            bbox_lonlat=(0.0, 0.0, 1.0, 1.0),
+        )
+    }
+    parsed = [
+        ParsedGridCell(
+            code="7507-4",
+            rings=(((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)),),
+            properties=(("n", "7507-4"),),
+        )
+    ]
+    areas = [AreaOption(type="celle", code="7507-4", name="Cell A")]
+    maps = match_area_grid_codes(shapes, parsed, areas)
+    assert maps.area_to_grid["7507-4"] == "7507-4"
+    assert maps.cell_labels["7507-4"] == "Cell A"
+
+
+@pytest.mark.network
+def test_satellite_grid_maps_mgrs_area_codes() -> None:
+    pytest.importorskip("mgrs")
+    from app.map_picker import build_grid_cell_shapes, match_area_grid_codes, parse_geojson_grid_cells
+    from geonorge.models import AreaOption
+
+    url = geojson_url_for_map_selection_layer("satellittbilder-100kmruter-utm33")
+    assert url is not None
+    text = requests.get(url, timeout=60).text
+    parsed = parse_geojson_grid_cells(text)
+    shapes = {shape.code: shape for shape in build_grid_cell_shapes(parsed, source_epsg=25833)}
+    areas = [AreaOption(type="celle", code="T33WXS", name="T33WXS")]
+    maps = match_area_grid_codes(shapes, parsed, areas)
+    assert maps.area_to_grid.get("T33WXS") is not None
+    assert maps.cell_labels[maps.area_to_grid["T33WXS"]] == "T33WXS"
+
+
 @pytest.mark.network
 def test_svalbard_multipolygon_uses_separate_subpaths() -> None:
     url = geojson_url_for_map_selection_layer("dtm-svalbard")

@@ -155,12 +155,79 @@ def _shape_intersects_viewport(
 
 
 def _extract_feature_code(props: dict[str, Any]) -> str | None:
-    for k in ("code", "Code", "n", "id", "ID", "name", "Name", "bladnr", "bladNr", "sheet", "Sheet"):
+    # Prefer human-readable sheet identifiers over internal numeric indices (e.g. Sentinel "n").
+    for k in ("code", "Code", "bladnr", "bladNr", "sheet", "Sheet", "name", "Name"):
         v = props.get(k)
         if isinstance(v, (str, int)):
             s = str(v).strip()
             if s:
                 return s
+    for k in ("n", "id", "ID"):
+        v = props.get(k)
+        if isinstance(v, (str, int)):
+            s = str(v).strip()
+            if s:
+                return s
+    return None
+
+
+def _feature_property_aliases(props: dict[str, Any]) -> set[str]:
+    aliases: set[str] = set()
+    for value in props.values():
+        if isinstance(value, (str, int)):
+            text = str(value).strip()
+            if text:
+                aliases.add(text)
+    return aliases
+
+
+def _normalize_area_code_for_mgrs(code: str) -> str | None:
+    """Return an MGRS 100 km key for Geonorge cell ids like T33WXR, or None."""
+    cleaned = code.strip().upper()
+    if cleaned.startswith("T") and len(cleaned) >= 6 and cleaned[1:3].isdigit():
+        cleaned = cleaned[1:]
+    if len(cleaned) < 5 or not cleaned[:2].isdigit() or not cleaned[2].isalpha():
+        return None
+    try:
+        import mgrs  # type: ignore[import-untyped]
+
+        mgrs.MGRS().toLatLon(cleaned)
+    except Exception:
+        return None
+    return cleaned
+
+
+def _shape_centroid_lonlat(shape: GridCellShape) -> tuple[float, float]:
+    min_lon, min_lat, max_lon, max_lat = shape.bbox_lonlat
+    return (min_lon + max_lon) / 2.0, (min_lat + max_lat) / 2.0
+
+
+def _mgrs_100km_key_for_lonlat(lon: float, lat: float) -> str | None:
+    try:
+        import mgrs  # type: ignore[import-untyped]
+
+        return mgrs.MGRS().toMGRS(lat, lon, MGRSPrecision=0)
+    except Exception:
+        return None
+
+
+def _grid_shape_for_mgrs_key(
+    shapes: dict[str, GridCellShape],
+    mgrs_key: str,
+) -> str | None:
+    try:
+        import mgrs  # type: ignore[import-untyped]
+
+        lat, lon = mgrs.MGRS().toLatLon(mgrs_key)
+    except Exception:
+        return None
+    point = QPointF(lon, lat)
+    for code, shape in shapes.items():
+        try:
+            if shape.path_lonlat.contains(point):
+                return code
+        except Exception:
+            continue
     return None
 
 
@@ -296,6 +363,16 @@ def _build_path_for_rings(rings: list[list[tuple[float, float]]]) -> tuple[QPain
 class ParsedGridCell:
     code: str
     rings: tuple[tuple[tuple[float, float], ...], ...]
+    properties: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class AreaGridMaps:
+    """Maps between map grid ids (GeoJSON) and Nedlasting area codes."""
+
+    grid_to_area: dict[str, str]
+    area_to_grid: dict[str, str]
+    cell_labels: dict[str, str]
 
 
 def parse_geojson_grid_cells(
@@ -327,14 +404,86 @@ def parse_geojson_grid_cells(
         code = _extract_feature_code(props)
         if not code:
             continue
-        if allowed and code not in allowed:
-            continue
+        aliases = _feature_property_aliases(props)
+        if allowed:
+            if code not in allowed and not aliases.intersection(allowed):
+                continue
+            if code not in allowed:
+                matched = next((alias for alias in sorted(aliases) if alias in allowed), None)
+                if matched:
+                    code = matched
         rings = _iter_polygon_rings(geom)
         if not rings:
             continue
         frozen_rings = tuple(tuple(ring) for ring in rings)
-        out.append(ParsedGridCell(code=code, rings=frozen_rings))
+        prop_items = tuple(
+            (str(key), str(value))
+            for key, value in sorted(props.items())
+            if isinstance(value, (str, int)) and str(value).strip()
+        )
+        out.append(ParsedGridCell(code=code, rings=frozen_rings, properties=prop_items))
     return out
+
+
+def match_area_grid_codes(
+    shapes: dict[str, GridCellShape],
+    parsed: list[ParsedGridCell],
+    areas: list,
+) -> AreaGridMaps:
+    """Associate grid polygons with Nedlasting area options for selection + tooltips."""
+    from geonorge.models import AreaOption
+
+    grid_to_area: dict[str, str] = {}
+    area_to_grid: dict[str, str] = {}
+    cell_labels: dict[str, str] = {}
+
+    def _claim(grid_code: str, area: AreaOption) -> None:
+        if grid_code not in shapes or grid_code in grid_to_area:
+            return
+        grid_to_area[grid_code] = area.code
+        area_to_grid[area.code] = grid_code
+        label = area.name.strip() or area.code
+        cell_labels[grid_code] = label
+
+    for area in areas:
+        if not isinstance(area, AreaOption):
+            continue
+        if area.code in shapes:
+            _claim(area.code, area)
+
+    for area in areas:
+        if not isinstance(area, AreaOption) or area.code in area_to_grid:
+            continue
+        for cell in parsed:
+            if cell.code in grid_to_area:
+                continue
+            alias_values = {value for _key, value in cell.properties}
+            if area.code in alias_values or area.name in alias_values:
+                _claim(cell.code, area)
+                break
+
+    for area in areas:
+        if not isinstance(area, AreaOption) or area.code in area_to_grid:
+            continue
+        mgrs_key = _normalize_area_code_for_mgrs(area.code)
+        if mgrs_key is None:
+            continue
+        grid_code = _grid_shape_for_mgrs_key(shapes, mgrs_key)
+        if grid_code is not None:
+            _claim(grid_code, area)
+
+    for grid_code, shape in shapes.items():
+        if grid_code in cell_labels:
+            continue
+        mgrs_key = _mgrs_100km_key_for_lonlat(*_shape_centroid_lonlat(shape))
+        if mgrs_key:
+            cell_labels[grid_code] = mgrs_key
+
+    return AreaGridMaps(
+        grid_to_area=grid_to_area,
+        area_to_grid=area_to_grid,
+        cell_labels=cell_labels,
+    )
 
 
 def build_grid_cell_shapes(
@@ -382,6 +531,7 @@ class MapCanvas(QWidget):
 
         self._grid_cells: dict[str, GridCellShape] = {}
         self._cell_labels: dict[str, str] = {}
+        self._grid_to_area: dict[str, str] = {}
         self._selected_codes: set[str] = set()
         self._disabled_codes: set[str] = set()
 
@@ -416,6 +566,18 @@ class MapCanvas(QWidget):
 
     def set_cell_labels(self, labels: dict[str, str]) -> None:
         self._cell_labels = dict(labels)
+
+    def set_area_grid_maps(self, maps: AreaGridMaps) -> None:
+        self._grid_to_area = dict(maps.grid_to_area)
+        self._cell_labels = dict(maps.cell_labels)
+
+    def _area_code_for_grid(self, grid_code: str) -> str:
+        return self._grid_to_area.get(grid_code, grid_code)
+
+    def _is_grid_disabled(self, grid_code: str | None) -> bool:
+        if not grid_code:
+            return False
+        return grid_code in self._disabled_codes
 
     def _cancel_hover_tooltip(self) -> None:
         self._tooltip_timer.stop()
@@ -638,6 +800,8 @@ class MapCanvas(QWidget):
 
         lon, lat = self._screen_to_lonlat(event.pos())
         code = self._grid_hit_test(lon, lat)
+        if code and self._is_grid_disabled(code):
+            code = None
         if code != self._hover_code:
             self._hover_code = code
             if code:
@@ -664,14 +828,14 @@ class MapCanvas(QWidget):
             return
         lon, lat = self._screen_to_lonlat(event.pos())
         code = self._grid_hit_test(lon, lat)
-        if not code or code in self._disabled_codes:
+        if not code or self._is_grid_disabled(code):
             return
         selected = code not in self._selected_codes
         if selected:
             self._selected_codes.add(code)
         else:
             self._selected_codes.discard(code)
-        self.toggled.emit(code, selected)
+        self.toggled.emit(self._area_code_for_grid(code), selected)
         self.update()
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
@@ -792,6 +956,9 @@ class MapPickerWidget(QWidget):
 
     def set_cell_labels(self, labels: dict[str, str]) -> None:
         self.canvas.set_cell_labels(labels)
+
+    def set_area_grid_maps(self, maps: AreaGridMaps) -> None:
+        self.canvas.set_area_grid_maps(maps)
 
     def apply_parsed_grid(
         self,
