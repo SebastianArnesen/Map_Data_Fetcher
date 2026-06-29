@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QPoint,
     QRectF,
+    QPointF,
     QSettings,
     QSize,
     Qt,
@@ -251,8 +252,23 @@ def _check_state_value(state: object) -> int:
 
 
 class HeaderCheckBox(QCheckBox):
+    _INDICATOR_SIZE = 13
+    _INDICATOR_LEFT = 5
+
+    def _indicator_rect(self) -> QRectF:
+        return QRectF(
+            float(self._INDICATOR_LEFT),
+            (self.height() - self._INDICATOR_SIZE) / 2.0,
+            float(self._INDICATOR_SIZE),
+            float(self._INDICATOR_SIZE),
+        )
+
+    def hitButton(self, pos: QPoint) -> bool:
+        # Custom paint draws the box at a fixed offset; Qt's default hit test misses it.
+        return self._indicator_rect().contains(QPointF(float(pos.x()), float(pos.y())))
+
     def paintEvent(self, event) -> None:
-        rect = QRectF(5, (self.height() - 13) / 2, 13, 13)
+        rect = self._indicator_rect()
         state = _check_state_value(self.checkState())
         is_hover = self.underMouse()
         light_mode = resolve_light_mode(self)
@@ -771,7 +787,6 @@ class MainWindow(QMainWindow):
         self._format_signature: tuple[str, ...] = ()
         self._category_signature: tuple[str, ...] = ()
         self._area_types_signature: tuple[AreaType, ...] = ()
-        self._area_all_previous_state = Qt.Unchecked
         self._compatibility_state = CompatibilityState()
         self._area_map_load_generation = 0
         self._map_grid_pool: QThreadPool | None = None
@@ -1503,7 +1518,6 @@ class MainWindow(QMainWindow):
     def _wire_events(self) -> None:
         self.area_type_group.buttonClicked.connect(self._on_area_type_button_clicked)
         self.area_model.selection_changed.connect(self._on_areas_changed)
-        self.area_all_checkbox.pressed.connect(self._remember_area_all_state)
         self.area_all_checkbox.clicked.connect(self._on_area_all_clicked)
         self.area_code_header.clicked.connect(lambda: self._on_area_sort_requested("code"))
         self.area_name_header.clicked.connect(lambda: self._on_area_sort_requested("name"))
@@ -2586,7 +2600,7 @@ class MainWindow(QMainWindow):
         refresh = _REFRESH_AREA_CHECK
         if promoted:
             refresh = frozenset({"selected", "download"})
-        self._schedule_recompute_lists(0, refresh=refresh)
+        self._schedule_recompute_lists(0, refresh=refresh, scope="area_check")
 
     def _check_for_updates(self) -> None:
         # Configure your GitHub repo owner/name here (or override with env vars later if you want).
@@ -3978,23 +3992,20 @@ class MainWindow(QMainWindow):
         refresh = _REFRESH_AREA_CHECK
         if promoted_from_auto:
             refresh = frozenset({"selected", "download"})
-        self._schedule_recompute_lists(0, refresh=refresh)
-
-    def _remember_area_all_state(self) -> None:
-        self._area_all_previous_state = self.area_all_checkbox.checkState()
+        self._schedule_recompute_lists(0, refresh=refresh, scope="area_check")
 
     def _on_area_all_clicked(self) -> None:
-        # Standard tri-state master behavior:
-        # unchecked -> checked, checked -> unchecked, partial -> checked.
-        target_checked = _check_state_value(self._area_all_previous_state) != int(Qt.Checked.value)
-        self.area_model.set_all_checked(target_checked)
+        # Drive from row model state, not Qt's tri-state toggle (which races with clicked).
+        aggregate = self.area_model.aggregate_check_state()
+        target_checked = aggregate != Qt.Checked
         self._auto_areas = []
         self._auto_area_codes = set()
-        self._apply_model_checks_to_selected_areas()
-        self._update_area_all_checkbox()
-        self._sync_area_map_selection()
-        self._reset_dataset_page()
-        self._schedule_recompute_lists(0, refresh=_REFRESH_AREA_CHECK)
+        self._suppress_area_change = True
+        try:
+            self.area_model.set_all_checked(target_checked)
+        finally:
+            self._suppress_area_change = False
+        self._on_areas_changed()
 
     def _sync_area_master_checkbox_visibility(self) -> None:
         show_list = self._area_type_shows_area_list(self._active_area_type())
