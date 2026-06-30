@@ -6,6 +6,7 @@ import os
 # Layer id → path mappings are taken from geonorge-nkg geoportal/nedlasting.html.
 _GEONORGE_NKG_BASE = "https://geonorge-nkg.atkv3-prod.kartverket.cloud"
 _GEONORGE_NKG_DEKNING_BASE = f"{_GEONORGE_NKG_BASE}/json/dekning"
+_GEONORGE_NKG_TEMA_BASE = f"{_GEONORGE_NKG_BASE}/json/tema"
 _GEONORGE_NKG_DTM_GRID_BASE = f"{_GEONORGE_NKG_DEKNING_BASE}/dtm"
 _GEONORGE_NKG_RASTER_GRID_BASE = f"{_GEONORGE_NKG_DEKNING_BASE}/raster"
 _GEONORGE_NKG_SJO_CELLER_BASE = f"{_GEONORGE_NKG_DEKNING_BASE}/sjo/celler"
@@ -38,6 +39,9 @@ def infer_source_epsg(*, layer_id: str | None = None, projection_code: str | Non
     """EPSG code for projected GeoJSON coordinates."""
     lid = (layer_id or "").strip().casefold()
     if lid == "dtm-svalbard":
+        return None
+    # Dataset-specific Sentinel skyfritt tema layers (CRS84 / WGS84 lon-lat polygons).
+    if lid.startswith("ruter_entinelskyfritt"):
         return None
     if lid in _WGS84_LAYERS:
         return 4326
@@ -161,9 +165,9 @@ def geojson_url_for_map_selection_layer(layer_id: str) -> str | None:
         "satellittbilder-100kmruter-utm33": (
             f"{_GEONORGE_NKG_DEKNING_BASE}/Satellittbilder_100kmruter_ETRS89utm33.json"
         ),
-        # Download API typo layer id; same 100 km grid as other Sentinel skyfritt products.
+        # Sentinel skyfritt Int16 products (per-dataset tema grid with MGRS cell codes).
         "ruter_entinelskyfritt2018uint16": (
-            f"{_GEONORGE_NKG_DEKNING_BASE}/Satellittbilder_100kmruter_ETRS89utm33.json"
+            f"{_GEONORGE_NKG_TEMA_BASE}/Ruter_entinelSkyfritt2018Uint16.geojson"
         ),
         # Sea chart map sheets
         "hovedserie_ny": f"{_GEONORGE_NKG_DEKNING_BASE}/sjo/hovedserie_ny.json",

@@ -8,3 +8,10 @@ ENRICHMENT_VERSION = 6
 ENRICH_MAX_WORKERS = 5
 ENRICH_BATCH_SIZE = 75
 ENRICH_PROGRESS_INTERVAL = 3
+
+# Download packaging: max concurrent Geonorge orders being prepared server-side.
+MAX_SERVER_ORDERS = 2
+ORDER_POLL_INTERVAL_S = 2.5
+ORDER_CHUNK_SIZE = 20
+# Parallel HTTP transfers once files are ready (packaging is separate).
+MAX_PARALLEL_DOWNLOADS = 3

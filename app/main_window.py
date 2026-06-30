@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,6 +19,7 @@ from PySide6.QtCore import (
     QRectF,
     QSettings,
     QSize,
+    QStandardPaths,
     Qt,
     QThreadPool,
     QTimer,
@@ -81,10 +83,27 @@ from app.compatibility_ui import (
     incompatible_selection_reasons,
     projection_list_state,
 )
-from app.dialogs import themed_message_box, themed_scrollable_message_dialog
-from app.download_progress import DownloadProgressDialog
+from app.dialogs import (
+    show_connection_lost_dialog,
+    themed_confirm_box,
+    themed_message_box,
+)
+from app.download_progress import (
+    DownloadOrderInfo,
+    DownloadProgressDialog,
+    DownloadProgressItem,
+    area_progress_display,
+    format_order_subheader,
+)
+from app.download_queue import PackagingSlotQueue, TransferSlotQueue
 from app.filter_index import DatasetFilterIndex, format_filter_key
-from app.map_picker import MapPickerWidget, fetch_text, match_area_grid_codes, parse_geojson_grid_cells
+from app.map_picker import (
+    ZOOM_STEP,
+    MapPickerWidget,
+    fetch_text,
+    match_area_grid_codes,
+    parse_geojson_grid_cells,
+)
 from app.models_qt import (
     DATASET_COL_COPY,
     DATASET_COL_LINK,
@@ -125,8 +144,22 @@ from app.theme import (
     theme_toggle_knob_border,
 )
 from app.tooltip_delay import cancel_pending_tooltips
-from app.updates import build_latest_release_web_url, fetch_latest_release, is_newer_version
+from app.updates import (
+    GITHUB_OWNER,
+    GITHUB_REPO,
+    build_latest_release_web_url,
+    fetch_latest_release,
+    is_newer_version,
+)
 from app.workers import FuncWorker, connect_worker_signals
+from geonorge.batch_download import (
+    BatchDownloadPartialFailure,
+    DownloadCancelled,
+    DownloadJobSpec,
+    DownloadTask,
+    build_target_path,
+    run_batch_order_download,
+)
 from geonorge.client import HttpClient
 from geonorge.compatibility import area_supports
 from geonorge.discovery import DiscoveryService
@@ -150,6 +183,26 @@ _AREA_CHECKBOX_COLUMN_W = 28
 _AREA_CODE_COLUMN_W = 82  # 10px narrower than before so Name sits closer to Code
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DownloadCancelledResult:
+    pass
+
+
+@dataclass
+class _PartialDownloadResult:
+    successes: list[tuple[str, str]]
+    failures: list[tuple[str, str]]
+
+
+@dataclass
+class _DownloadJob:
+    job_id: int
+    cancel: threading.Event
+    worker: FuncWorker | None
+    dialog: DownloadProgressDialog
+
 
 # Selected panel: collapse long category/area lists (>3 items → show 2 + toggle).
 _SELECTED_GROUP_COLLAPSE_AFTER = 3
@@ -826,11 +879,23 @@ class MainWindow(QMainWindow):
         self._copy_status_timer = QTimer(self)
         self._copy_status_timer.setSingleShot(True)
         self._copy_status_timer.timeout.connect(lambda: self.copy_status_text.setText(""))
+        self._packaging_queue = PackagingSlotQueue()
+        self._transfer_queue = TransferSlotQueue()
+        self._download_jobs: dict[int, _DownloadJob] = {}
         self._download_progress_dialog: DownloadProgressDialog | None = None
+        self._download_job_seq = 0
+        self._pending_update_url: str | None = None
+        self._update_check_inflight = False
         self._build_ui()
         self._apply_style()
         self._wire_events()
         self._schedule_recompute_lists(0)
+
+        self._update_check_timer = QTimer(self)
+        self._update_check_timer.setInterval(30 * 60 * 1000)
+        self._update_check_timer.timeout.connect(self._maybe_check_for_updates)
+        self._update_check_timer.start()
+        QTimer.singleShot(0, self._maybe_check_for_updates)
 
         self._load_initial_data()
 
@@ -856,10 +921,11 @@ class MainWindow(QMainWindow):
         self.reset_cache_button.setToolTip(
             "Delete the local dataset index and start over as if the app were never used."
         )
-        self.check_updates_button = QPushButton("Check updates")
+        self.check_updates_button = QPushButton("New version available")
         self.check_updates_button.setObjectName("toolbarButton")
         self.check_updates_button.setCursor(Qt.PointingHandCursor)
-        self.check_updates_button.setToolTip("Check GitHub for a newer version.")
+        self.check_updates_button.setToolTip("A newer release is on GitHub — open download page.")
+        self.check_updates_button.setVisible(False)
         toolbar_layout.addWidget(self.refresh_button)
         toolbar_layout.addWidget(self.reset_cache_button)
         toolbar_layout.addWidget(self.check_updates_button)
@@ -1532,6 +1598,8 @@ class MainWindow(QMainWindow):
             self._area_map_expanded_window.setStyleSheet(
                 build_stylesheet(palette_for(self._light_mode), ui_scale=factor)
             )
+        if self._download_progress_dialog is not None:
+            self._download_progress_dialog.apply_theme(light_mode=self._light_mode)
         if hasattr(self, "area_view"):
             clear_tree_index_widgets(
                 self.area_view,
@@ -1568,7 +1636,7 @@ class MainWindow(QMainWindow):
         self.format_view.clicked.connect(self._on_format_clicked)
         self.refresh_button.clicked.connect(self._refresh_all)
         self.reset_cache_button.clicked.connect(self._reset_cache)
-        self.check_updates_button.clicked.connect(self._check_for_updates)
+        self.check_updates_button.clicked.connect(self._open_pending_update)
         # Only leaf controls: clicking panel chrome must not trigger busy / disable the whole UI.
         self._filter_busy_widgets = [
             self.downloadable_filter,
@@ -2671,11 +2739,11 @@ class MainWindow(QMainWindow):
 
     def _on_area_map_zoom_in(self) -> None:
         canvas = self.area_map_picker.canvas
-        canvas.set_center(lon=canvas._center_lon, lat=canvas._center_lat, zoom=canvas._zoom + 1)  # type: ignore[attr-defined]
+        canvas.set_center(lon=canvas._center_lon, lat=canvas._center_lat, zoom=canvas._zoom + ZOOM_STEP)  # type: ignore[attr-defined]
 
     def _on_area_map_zoom_out(self) -> None:
         canvas = self.area_map_picker.canvas
-        canvas.set_center(lon=canvas._center_lon, lat=canvas._center_lat, zoom=canvas._zoom - 1)  # type: ignore[attr-defined]
+        canvas.set_center(lon=canvas._center_lon, lat=canvas._center_lat, zoom=canvas._zoom - ZOOM_STEP)  # type: ignore[attr-defined]
 
     def _on_area_map_toggled(self, code: str, selected: bool) -> None:
         if self._active_area_type() != "celle":
@@ -2704,89 +2772,56 @@ class MainWindow(QMainWindow):
             refresh = frozenset({"selected", "download"})
         self._schedule_recompute_lists(0, refresh=refresh, scope="area_check")
 
-    def _check_for_updates(self) -> None:
-        # Configure your GitHub repo owner/name here (or override with env vars later if you want).
-        owner = "SebastianArnesen"  # GitHub owner/org
-        repo = "Map_Data_Fetcher"  # GitHub repo name
+    def _maybe_check_for_updates(self) -> None:
+        if self._pending_update_url is not None or self._update_check_inflight:
+            return
         token = os.environ.get("GEONORGE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
-        self._set_status("Checking for updates…")
-        self.check_updates_button.setEnabled(False)
+        self._update_check_inflight = True
 
         def work():
-            return fetch_latest_release(owner=owner, repo=repo, token=token)
+            return fetch_latest_release(owner=GITHUB_OWNER, repo=GITHUB_REPO, token=token)
 
         worker = FuncWorker(work)
 
         def on_result(info) -> None:
-            self.check_updates_button.setEnabled(True)
-            latest = info.latest_version
-            if is_newer_version(__version__, latest):
-                self._set_status(f"Update available: v{latest}")
-                box = themed_message_box(
-                    self,
-                    title="Update available",
-                    text=(
-                        f"Current version: v{__version__}\n"
-                        f"Latest version: v{latest}\n\n"
-                        "Open the download page?"
-                    ),
+            self._update_check_inflight = False
+            if is_newer_version(__version__, info.latest_version):
+                self._pending_update_url = info.release_url or build_latest_release_web_url(
+                    owner=GITHUB_OWNER, repo=GITHUB_REPO
                 )
-                box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-                if box.exec() == QMessageBox.Yes:
-                    QDesktopServices.openUrl(QUrl(info.release_url))
-            else:
-                self._set_status(f"Up to date (v{__version__})")
-                box = themed_message_box(
-                    self,
-                    title="No updates",
-                    text=f"You're on the latest version (v{__version__}).",
-                )
-                box.setStandardButtons(QMessageBox.Ok)
-                box.exec()
+                self.check_updates_button.setVisible(True)
+                self._update_check_timer.stop()
 
         def on_error(err) -> None:
-            self.check_updates_button.setEnabled(True)
-            # FuncWorker emits a traceback string. For update checks, show a friendly message.
-            self._set_status("Update check failed")
-            details = str(err)
-            if "404 Client Error" in details and "api.github.com/repos/" in details:
-                extra = ""
-                if not token:
-                    extra = (
-                        "\n\nIf this repo is private, GitHub returns 404 unless you provide a token."
-                        "\nSet one of these environment variables and try again:"
-                        "\n- GEONORGE_GITHUB_TOKEN (recommended)"
-                        "\n- GITHUB_TOKEN"
-                    )
-                box = themed_message_box(
-                    self,
-                    title="Couldn't check for updates",
-                    text=(
-                        "GitHub returned 404 for the latest release endpoint."
-                        "\n\nPossible reasons:"
-                        "\n- The repo is private (unauthenticated requests return 404)"
-                        "\n- There is no published (non–pre-release) release"
-                        "\n- Owner/repo name is wrong"
-                        f"{extra}\n\nOpen the Releases page in your browser?"
-                    ),
-                    icon="warning",
-                )
-                box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-                if box.exec() == QMessageBox.Yes:
-                    QDesktopServices.openUrl(QUrl(build_latest_release_web_url(owner=owner, repo=repo)))
-                return
+            self._update_check_inflight = False
+            logger.debug("Background update check failed: %s", err)
 
+        connect_worker_signals(worker, result=on_result, error=on_error)
+        self._start_worker(worker)
+
+    def _open_pending_update(self) -> None:
+        url = self._pending_update_url or build_latest_release_web_url(
+            owner=GITHUB_OWNER, repo=GITHUB_REPO
+        )
+        if not url:
             box = themed_message_box(
                 self,
-                title="Couldn't check for updates",
-                text="The update check failed.\n\nDetails:\n" + details,
+                title="Couldn't open release page",
+                text="No release URL is available.",
                 icon="warning",
             )
             box.setStandardButtons(QMessageBox.Ok)
             box.exec()
-
-        connect_worker_signals(worker, result=on_result, error=on_error)
-        self._start_worker(worker)
+            return
+        if not QDesktopServices.openUrl(QUrl(url)):
+            box = themed_message_box(
+                self,
+                title="Couldn't open release page",
+                text=f"Your system could not open:\n{url}",
+                icon="warning",
+            )
+            box.setStandardButtons(QMessageBox.Ok)
+            box.exec()
 
     def _rebuild_dataset_index(self) -> None:
         self._dataset_index_by_uuid = {d.metadata_uuid: i for i, d in enumerate(self._datasets)}
@@ -3902,8 +3937,155 @@ class MainWindow(QMainWindow):
     def _download_task_count(self) -> int:
         return len(self._download_task_labels())
 
+    def _default_download_folder(self) -> Path:
+        settings = QSettings("Geonorge", "Datasets")
+        saved = settings.value("downloads/last_folder", "", type=str).strip()
+        if saved:
+            saved_path = Path(saved).expanduser()
+            if saved_path.exists() and saved_path.is_dir():
+                return saved_path
+
+        qt_downloads = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+        if qt_downloads:
+            qt_path = Path(qt_downloads)
+            if qt_path.exists() and qt_path.is_dir():
+                return qt_path
+
+        home_downloads = Path.home() / "Downloads"
+        if home_downloads.exists() and home_downloads.is_dir():
+            return home_downloads
+
+        return Path(__file__).resolve().parent.parent
+
+    def _choose_download_folder(self) -> str:
+        start_dir = str(self._default_download_folder())
+        folder = QFileDialog.getExistingDirectory(self, "Choose download folder", start_dir)
+        if folder:
+            QSettings("Geonorge", "Datasets").setValue("downloads/last_folder", folder)
+        return folder
+
+    def _next_download_job_id(self) -> int:
+        self._download_job_seq += 1
+        return self._download_job_seq
+
+    def _get_download_job(self, job_id: int) -> _DownloadJob | None:
+        return self._download_jobs.get(job_id)
+
+    def _get_or_create_download_progress_dialog(self) -> DownloadProgressDialog:
+        if self._download_progress_dialog is None:
+            dialog = DownloadProgressDialog(None, light_mode=self._light_mode)
+            if self.windowIcon() and not self.windowIcon().isNull():
+                dialog.setWindowIcon(self.windowIcon())
+            dialog.cancel_requested.connect(self._request_cancel_download)
+            dialog.close_all_requested.connect(self._request_cancel_all_downloads)
+            dialog.finished.connect(self._on_download_progress_dialog_closed)
+            self._download_progress_dialog = dialog
+        return self._download_progress_dialog
+
+    def _detach_download_job(self, job_id: int, *, remove_from_dialog: bool) -> None:
+        self._download_jobs.pop(job_id, None)
+        dialog = self._download_progress_dialog
+        if dialog is None:
+            return
+        if remove_from_dialog:
+            dialog.remove_order(job_id)
+            if not dialog.has_orders():
+                dialog.allow_close()
+                dialog.close()
+                dialog.deleteLater()
+                self._download_progress_dialog = None
+            return
+        dialog.mark_order_finished(job_id)
+        self._sync_download_dialog_complete_state()
+
+    def _sync_download_dialog_complete_state(self) -> None:
+        dialog = self._download_progress_dialog
+        if dialog is None or self._download_jobs:
+            return
+        if dialog.all_orders_finished():
+            dialog.enter_complete_mode()
+
+    def _on_download_progress_dialog_closed(self) -> None:
+        self._download_progress_dialog = None
+
+    def _remove_download_job(self, job_id: int) -> None:
+        self._detach_download_job(job_id, remove_from_dialog=True)
+
+    def _request_cancel_all_downloads(self) -> None:
+        if not self._download_jobs:
+            return
+        confirmed = themed_confirm_box(
+            self,
+            title="Cancel all downloads?",
+            text="Stop all downloads in progress? Files already saved will be kept.",
+            accept_label="Yes",
+            reject_label="No",
+        )
+        if not confirmed:
+            return
+        for job_id in list(self._download_jobs):
+            job = self._download_jobs.get(job_id)
+            if job is None or job.cancel.is_set():
+                continue
+            job.cancel.set()
+            job.dialog.set_order_cancelling(job_id, True)
+        queue_suffix = self._download_queue_status()
+        self._set_status(f"Cancelling downloads…{queue_suffix}")
+
+    def _downloads_in_progress(self) -> bool:
+        return any(job.worker is not None for job in self._download_jobs.values())
+
+    def _request_cancel_download(self, job_id: int) -> None:
+        job = self._get_download_job(job_id)
+        if job is None or job.cancel.is_set():
+            return
+        confirmed = themed_confirm_box(
+            self,
+            title="Cancel download?",
+            text="Stop this download? Files already saved will be kept.",
+            accept_label="Yes",
+            reject_label="No",
+        )
+        if not confirmed:
+            return
+        job.cancel.set()
+        job.dialog.set_order_cancelling(job_id, True)
+        queue_suffix = self._download_queue_status()
+        self._set_status(f"Cancelling download…{queue_suffix}")
+
+    def _confirm_quit_while_downloading(self) -> bool:
+        return themed_confirm_box(
+            self,
+            title="Quit while downloading?",
+            text="Downloads are still in progress. Quit anyway?",
+            accept_label="Quit",
+            reject_label="Cancel",
+            destructive_accept=True,
+        )
+
+    def _cancel_all_downloads(self) -> None:
+        for job in self._download_jobs.values():
+            job.cancel.set()
+            if self._download_progress_dialog is not None:
+                self._download_progress_dialog.set_order_cancelling(job.job_id, True)
+
+    def _download_queue_status(self) -> str:
+        waiting = self._packaging_queue.waiting_count
+        active = self._packaging_queue.active_count
+        if waiting <= 0 and active <= 0:
+            return ""
+        parts: list[str] = []
+        if active:
+            parts.append(f"{active} packaging")
+        if waiting:
+            parts.append(f"{waiting} queued")
+        return f" ({', '.join(parts)})"
+
     def _close_download_progress_dialog(self) -> None:
+        for job_id in list(self._download_jobs):
+            self._remove_download_job(job_id)
         if self._download_progress_dialog is not None:
+            self._download_progress_dialog.allow_close()
             self._download_progress_dialog.close()
             self._download_progress_dialog.deleteLater()
             self._download_progress_dialog = None
@@ -4573,19 +4755,13 @@ class MainWindow(QMainWindow):
         areas_eff = self._effective_areas()
         if requires_area and not areas_eff:
             return
-        folder = QFileDialog.getExistingDirectory(self, "Choose download folder")
+        folder = self._choose_download_folder()
         if not folder:
             return
 
-        task_labels = self._download_task_labels()
-        self._close_download_progress_dialog()
-        progress_dialog = DownloadProgressDialog(
-            self,
-            task_labels,
-            light_mode=self._light_mode,
-        )
-        self._download_progress_dialog = progress_dialog
-        progress_dialog.show()
+        job_id = self._next_download_job_id()
+        cancel_event = threading.Event()
+        progress_dialog = self._get_or_create_download_progress_dialog()
 
         areas: list[AreaOption | None] = list(areas_eff) if requires_area else [None]
         area_type = self._active_area_type() if requires_area else None
@@ -4594,116 +4770,248 @@ class MainWindow(QMainWindow):
         projection_part = proj.code if proj else "any"
         holder: dict[str, FuncWorker] = {}
 
-        def do_download() -> list[tuple[str, str]]:
-            results: list[tuple[str, str]] = []
-            for index, a in enumerate(areas):
-                area_label = a.label if a else "Dataset"
-                area_code = a.code if a else None
-                if "worker" in holder:
-                    holder["worker"].signals.progress.emit(0, 0, f"Preparing {area_label}…")
-                if a and not area_supports(
-                    a,
-                    projection_code=projection_code,
+        safe_title = "".join(ch for ch in ds.title if ch.isalnum() or ch in (" ", "_", "-")).strip().replace(" ", "_")
+        spec = DownloadJobSpec(
+            metadata_uuid=ds.metadata_uuid,
+            area_type=area_type,
+            format_name=fmt.name,
+            projection_code=projection_code,
+            base_url=ds.download_api_base,
+            output_dir=Path(folder),
+            safe_title=safe_title,
+            projection_part=projection_part,
+        )
+
+        progress_items = [
+            DownloadProgressItem(
+                display_text=area_progress_display(area) if area else ds.title,
+                zip_filename=build_target_path(spec, area, area_type).name,
+            )
+            for area in areas
+        ]
+        display_names = [item.display_text for item in progress_items]
+        projection_label = proj.label if proj else "Any projection"
+        progress_dialog.add_order(
+            DownloadOrderInfo(
+                job_id=job_id,
+                dataset_title=ds.title,
+                subheader=format_order_subheader(
+                    area_count=len(progress_items),
+                    projection=projection_label,
                     format_name=fmt.name,
-                ):
-                    raise RuntimeError(f"{area_label}: Not available with the selected projection and format.")
-                while True:
-                    ok, reason = self._nedlasting.validate_area_format_projection(
-                        metadata_uuid=ds.metadata_uuid,
-                        area_type=area_type,
-                        area_code=area_code,
-                        format_name=fmt.name,
-                        projection_code=projection_code,
-                        base_url=ds.download_api_base,
-                        area_option=a,
-                    )
-                    if not ok:
-                        raise RuntimeError(f"{area_label}: {reason or 'Not available.'}")
-                    try:
-                        ref = self._nedlasting.place_order(
-                            metadata_uuid=ds.metadata_uuid,
-                            area_type=area_type,
-                            area_code=area_code,
-                            format_name=fmt.name,
-                            projection_code=projection_code,
-                            base_url=ds.download_api_base,
-                        )
-                        url = self._nedlasting.poll_download_url(ref, base_url=ds.download_api_base)
-                        size = self._http.content_length(url)
-                        if "worker" in holder:
-                            holder["worker"].signals.progress.emit(0, size or 0, f"Downloading {area_label} ({_format_bytes(size)})…")
-                        safe_title = "".join(ch for ch in ds.title if ch.isalnum() or ch in (" ", "_", "-")).strip().replace(" ", "_")
-                        area_part = f"{area_type}_{area_code}" if area_type and area_code else "full"
-                        target = Path(folder) / f"{safe_title}_{area_part}_{fmt.name}_{projection_part}.zip"
+                ),
+                items=progress_items,
+            )
+        )
+        progress_dialog.show()
 
-                        def on_progress(downloaded: int, total: int | None, label: str = area_label) -> None:
-                            if "worker" not in holder:
-                                return
-                            if total:
-                                message = f"Downloading {label}: {_format_bytes(downloaded)} / {_format_bytes(total)}"
-                            else:
-                                message = f"Downloading {label}: {_format_bytes(downloaded)}"
-                            holder["worker"].signals.progress.emit(downloaded, total or 0, message)
+        job = _DownloadJob(
+            job_id=job_id,
+            cancel=cancel_event,
+            worker=None,
+            dialog=progress_dialog,
+        )
+        self._download_jobs[job_id] = job
+        packaging_queue = self._packaging_queue
+        transfer_queue = self._transfer_queue
 
-                        self._http.download(url, str(target), progress=on_progress)
-                        results.append((area_label, str(target)))
-                        if "worker" in holder:
-                            holder["worker"].signals.item_completed.emit(index)
-                        break
-                    except Exception as e:
-                        # Re-raise so UI thread can decide skip/change-format.
-                        raise RuntimeError(f"{area_label}: {e}") from e
-            return results
+        class _DownloadReporter:
+            def __init__(self) -> None:
+                self._packaging_done = False
+                self._active_transfers: dict[int, tuple[str, int, int | None]] = {}
 
-        self._set_status("Downloading…")
+            def preparing(self, message: str) -> None:
+                if "worker" not in holder:
+                    return
+                suffix = ""
+                waiting = packaging_queue.waiting_count
+                if waiting:
+                    suffix = f" ({waiting} ahead in packaging queue)"
+                holder["worker"].signals.emit_progress(0, 0, f"{message}{suffix}")
+
+            def packaging(self, ready: int, total: int) -> None:
+                if "worker" not in holder or self._packaging_done:
+                    return
+                if ready >= total:
+                    self._packaging_done = True
+                holder["worker"].signals.emit_progress(
+                    ready, total, f"Preparing order: {ready}/{total} files ready…"
+                )
+
+            def downloading(self, index: int, label: str, size: int | None) -> None:
+                if "worker" not in holder:
+                    return
+                display = display_names[index] if 0 <= index < len(display_names) else label
+                holder["worker"].signals.item_active.emit(index)
+                self._active_transfers[index] = (display, 0, size)
+                self._emit_transfer_status()
+
+            def transfer(
+                self,
+                index: int,
+                label: str,
+                downloaded: int,
+                total: int | None,
+                *,
+                force: bool = False,
+            ) -> None:
+                if "worker" not in holder:
+                    return
+                display = display_names[index] if 0 <= index < len(display_names) else label
+                self._active_transfers[index] = (display, downloaded, total)
+                self._emit_transfer_status()
+
+            def _emit_transfer_status(self) -> None:
+                if "worker" not in holder or not self._active_transfers:
+                    return
+                active = len(self._active_transfers)
+                _index, (label, downloaded, total) = max(
+                    self._active_transfers.items(),
+                    key=lambda item: item[1][1] / max(item[1][2] or 1, 1),
+                )
+                if total:
+                    progress = f"{_format_bytes(downloaded)} / {_format_bytes(total)}"
+                else:
+                    progress = _format_bytes(downloaded)
+                if active > 1:
+                    message = f"Downloading {active} files in parallel — {label}: {progress}"
+                else:
+                    message = f"Downloading {label}: {progress}"
+                holder["worker"].signals.emit_progress(downloaded, total or 0, message)
+
+        download_reporter = _DownloadReporter()
+
+        def do_download() -> list[tuple[str, str]] | _PartialDownloadResult | _DownloadCancelledResult:
+            tasks = [DownloadTask(index=index, area=a) for index, a in enumerate(areas)]
+
+            def on_item_completed(index: int) -> None:
+                if "worker" in holder:
+                    holder["worker"].signals.item_completed.emit(index)
+                download_reporter._active_transfers.pop(index, None)
+
+            def on_item_failed(index: int, _label: str, _reason: str) -> None:
+                if "worker" in holder:
+                    holder["worker"].signals.item_failed.emit(index)
+                download_reporter._active_transfers.pop(index, None)
+
+            try:
+                return run_batch_order_download(
+                    tasks,
+                    spec,
+                    ned=self._nedlasting,
+                    http=self._http,
+                    reporter=download_reporter,
+                    on_item_completed=on_item_completed,
+                    on_item_failed=on_item_failed,
+                    acquire_packaging_slot=packaging_queue.acquire,
+                    release_packaging_slot=packaging_queue.release,
+                    acquire_transfer_slot=transfer_queue.acquire,
+                    release_transfer_slot=transfer_queue.release,
+                    cancel=cancel_event,
+                )
+            except BatchDownloadPartialFailure as exc:
+                return _PartialDownloadResult(exc.successes, exc.failures)
+            except DownloadCancelled:
+                return _DownloadCancelledResult()
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
+
+        def on_finished() -> None:
+            job = self._get_download_job(job_id)
+            if job is not None:
+                job.worker = None
+
+        def on_done(results: object) -> None:
+            job = self._get_download_job(job_id)
+            dialog = job.dialog if job is not None else None
+            queue_suffix = self._download_queue_status()
+
+            if isinstance(results, _PartialDownloadResult):
+                succeeded = len(results.successes)
+                failed = len(results.failures)
+                total = succeeded + failed
+                show_connection_lost_dialog(
+                    self,
+                    succeeded=succeeded,
+                    failed=failed,
+                    total=total,
+                    failed_labels=[label for label, _reason in results.failures],
+                )
+                if dialog is not None:
+                    dialog.mark_all_complete(job_id)
+                self._detach_download_job(job_id, remove_from_dialog=False)
+                self._set_status(f"Connection lost — download interrupted{queue_suffix}")
+                return
+
+            if isinstance(results, _DownloadCancelledResult):
+                self._detach_download_job(job_id, remove_from_dialog=True)
+                self._set_status(f"Download cancelled.{queue_suffix}")
+                return
+
+            if dialog is not None:
+                dialog.mark_all_complete(job_id)
+            self._detach_download_job(job_id, remove_from_dialog=False)
+            self._set_status(f"Download complete.{queue_suffix}")
+
+        def on_error(tb: str) -> None:
+            job = self._get_download_job(job_id)
+            dialog = job.dialog if job is not None else None
+            queue_suffix = self._download_queue_status()
+
+            if "DownloadCancelled" in tb:
+                self._detach_download_job(job_id, remove_from_dialog=True)
+                self._set_status(f"Download cancelled.{queue_suffix}")
+                return
+
+            logger.error("Download failed: %s", tb)
+
+            if "NetworkError" in tb:
+                if dialog is not None:
+                    dialog.allow_close()
+                show_connection_lost_dialog(
+                    self,
+                    succeeded=0,
+                    failed=1,
+                    total=1,
+                )
+                self._detach_download_job(job_id, remove_from_dialog=False)
+                self._set_status(f"Connection lost — download interrupted{queue_suffix}")
+                return
+
+            self._detach_download_job(job_id, remove_from_dialog=True)
+            self._set_status(f"Download failed.{queue_suffix}")
+            self._download_with_per_area_prompts()
+
+        self._set_status(f"Downloading…{self._download_queue_status()}")
         worker = FuncWorker(do_download)
         holder["worker"] = worker
+        job.worker = worker
         connect_worker_signals(
             worker,
-            result=self._on_download_done,
-            error=self._on_download_error,
+            result=on_done,
+            error=on_error,
+            finished=on_finished,
             progress=self._on_download_progress,
-            item_completed=progress_dialog.mark_item_complete,
+            item_completed=lambda idx: progress_dialog.mark_item_complete(job_id, idx),
+            item_failed=lambda idx: progress_dialog.mark_item_failed(job_id, idx),
+            item_active=lambda idx: progress_dialog.mark_item_active(job_id, idx),
         )
         self._start_worker(worker)
 
     def _on_download_done(self, results: object) -> None:
-        if self._download_progress_dialog is not None:
-            self._download_progress_dialog.mark_all_complete()
-        self._close_download_progress_dialog()
-        self._set_status("Download complete.")
+        # Per-job handlers are wired in _start_download_flow.
         if isinstance(results, list) and results:
-            count = len(results)
-            folder = str(Path(results[0][1]).parent)
-            body = "\n".join(f"{area_label}: {path}" for area_label, path in results)
-            dialog = themed_scrollable_message_dialog(
-                self,
-                title="Download complete",
-                heading=f"Downloaded {count} file{'s' if count != 1 else ''}.",
-                subtitle=folder,
-                body=body,
-                icon="success",
-            )
-            dialog.exec()
-        elif isinstance(results, list):
-            themed_message_box(
-                self,
-                title="Download complete",
-                text="Done.",
-                icon="success",
-            ).exec()
+            self._set_status("Download complete.")
 
     def _on_download_progress(self, done: int, total: int, message: str) -> None:
         logger.debug("Download progress %s/%s: %s", done, total, message)
-        self._set_status(message)
+        queue_suffix = self._download_queue_status()
+        self._set_status(f"{message}{queue_suffix}")
 
     def _on_download_error(self, tb: str) -> None:
         logger.error("Download failed: %s", tb)
-        self._close_download_progress_dialog()
-        self._set_status("Download failed.")
-        # If multiple areas are selected, we want per-area warnings with skip/change-format.
-        # Since the worker stops on first failure, we re-run sequentially on the UI thread with prompts.
-        self._download_with_per_area_prompts()
 
     def _download_with_per_area_prompts(self) -> None:
         ds = self._selected_dataset
@@ -4714,7 +5022,7 @@ class MainWindow(QMainWindow):
             return
         if ds.projections and not proj_eff:
             return
-        folder = QFileDialog.getExistingDirectory(self, "Choose download folder")
+        folder = self._choose_download_folder()
         if not folder:
             return
 
@@ -4752,6 +5060,7 @@ class MainWindow(QMainWindow):
                         format_name=fmt.name,
                         projection_code=projection_code,
                         base_url=ds.download_api_base,
+                        area_option=a,
                     )
                     url = self._nedlasting.poll_download_url(ref, base_url=ds.download_api_base)
                     size = self._http.content_length(url)
@@ -4841,7 +5150,7 @@ class MainWindow(QMainWindow):
 
             def on_progress(done: int, total: int, message: str) -> None:
                 if "worker" in holder:
-                    holder["worker"].signals.progress.emit(done, total, message)
+                    holder["worker"].signals.emit_progress(done, total, message)
 
             return self._discovery.enrich_parallel(
                 ordered,
@@ -5062,6 +5371,11 @@ class MainWindow(QMainWindow):
         self._configure_dataset_columns()
 
     def closeEvent(self, event) -> None:
+        if self._downloads_in_progress():
+            if not self._confirm_quit_while_downloading():
+                event.ignore()
+                return
+            self._cancel_all_downloads()
         logger.info("Closing window; stopping background workers")
         self._stop_background_work()
         super().closeEvent(event)

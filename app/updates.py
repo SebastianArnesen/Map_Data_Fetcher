@@ -5,6 +5,9 @@ from dataclasses import dataclass
 
 import requests
 
+GITHUB_OWNER = "SebastianArnesen"
+GITHUB_REPO = "Map_Data_Fetcher"
+
 
 @dataclass(frozen=True)
 class UpdateInfo:

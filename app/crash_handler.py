@@ -7,6 +7,7 @@ import faulthandler
 import logging
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,11 @@ _handling_crash = False
 _crash_ui_scheduled = False
 _installed = False
 _faulthandler_file = None
+_last_crash_fingerprint: str | None = None
+_last_crash_report_time = 0.0
+_suppressed_duplicate_count = 0
+# Suppress repeated identical crashes (e.g. progress.emit OverflowError every chunk).
+_CRASH_DEDUP_WINDOW_S = 60.0
 
 PROJECT_CRASH_DIR = Path(__file__).resolve().parent.parent / "crash_reports"
 
@@ -60,6 +66,11 @@ def _write_crash_report(text: str) -> Path:
     except OSError as exc:
         logger.warning("Could not mirror crash report into project folder: %s", exc)
     return user_path
+
+
+def _exception_fingerprint(exc_type, exc_value) -> str:
+    name = getattr(exc_type, "__name__", str(exc_type))
+    return f"{name}:{exc_value!s}"
 
 
 def _format_crash_report(exc_type, exc_value, exc_tb, *, origin: str = "uncaught") -> str:
@@ -245,11 +256,34 @@ def report_uncaught_exception(
     origin: str = "uncaught",
 ) -> bool:
     """Log, persist, and show crash UI. Returns True if handled."""
-    global _handling_crash
-    if _handling_crash:
-        return False
+    global _handling_crash, _last_crash_fingerprint, _last_crash_report_time, _suppressed_duplicate_count
     if exc_type is KeyboardInterrupt:
         return False
+    # Re-entrant call while writing a report — swallow to avoid excepthook loops.
+    if _handling_crash:
+        return True
+
+    fingerprint = f"{origin}|{_exception_fingerprint(exc_type, exc_value)}"
+    now = time.monotonic()
+    if (
+        fingerprint == _last_crash_fingerprint
+        and now - _last_crash_report_time < _CRASH_DEDUP_WINDOW_S
+    ):
+        _suppressed_duplicate_count += 1
+        if _suppressed_duplicate_count in (1, 10, 100) or _suppressed_duplicate_count % 500 == 0:
+            logger.error(
+                "Repeated uncaught %s from %s (%s duplicates suppressed; "
+                "restart the app if this persists after a code update)",
+                getattr(exc_type, "__name__", exc_type),
+                origin,
+                _suppressed_duplicate_count,
+            )
+        return True
+
+    _last_crash_fingerprint = fingerprint
+    _last_crash_report_time = now
+    _suppressed_duplicate_count = 0
+
     _handling_crash = True
     try:
         report = _format_crash_report(exc_type, exc_value, exc_tb, origin=origin)
@@ -263,7 +297,7 @@ def report_uncaught_exception(
             "Geonorge Datasets — Error",
             "".join(traceback.format_exception(exc_type, exc_value, exc_tb))[:3000],
         )
-        return False
+        return True
     finally:
         _handling_crash = False
 

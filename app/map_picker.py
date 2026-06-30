@@ -27,6 +27,10 @@ _HTTP_HEADERS = {
 }
 _MAX_TILE_INFLIGHT = 8
 
+ZOOM_MIN = 2.0
+ZOOM_MAX = 18.0
+ZOOM_STEP = 0.5
+
 
 def _tile_url_template() -> str:
     return (os.environ.get("GEONORGE_BASEMAP_TILE_URL") or DEFAULT_TILE_URL).strip()
@@ -36,7 +40,7 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
 
-def lonlat_to_global_px(lon: float, lat: float, zoom: int) -> tuple[float, float]:
+def lonlat_to_global_px(lon: float, lat: float, zoom: float) -> tuple[float, float]:
     lat = _clamp(lat, -85.05112878, 85.05112878)
     n = 2.0**zoom
     x = (lon + 180.0) / 360.0 * n * 256.0
@@ -45,7 +49,7 @@ def lonlat_to_global_px(lon: float, lat: float, zoom: int) -> tuple[float, float
     return x, y
 
 
-def global_px_to_lonlat(x: float, y: float, zoom: int) -> tuple[float, float]:
+def global_px_to_lonlat(x: float, y: float, zoom: float) -> tuple[float, float]:
     n = 2.0**zoom
     lon = x / (n * 256.0) * 360.0 - 180.0
     t = math.pi * (1.0 - 2.0 * y / (n * 256.0))
@@ -125,7 +129,7 @@ def _viewport_lonlat_bounds(
     *,
     center_lon: float,
     center_lat: float,
-    zoom: int,
+    zoom: float,
     width: int,
     height: int,
 ) -> tuple[float, float, float, float]:
@@ -310,7 +314,7 @@ class GridCellShape:
 def _lonlat_path_to_screen(
     path_lonlat: QPainterPath,
     *,
-    zoom: int,
+    zoom: float,
     top_left: tuple[float, float],
 ) -> QPainterPath:
     """Map a lon/lat path to screen space, honouring MoveTo subpath boundaries."""
@@ -514,7 +518,7 @@ class MapCanvas(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, False)
 
-        self._zoom = 5
+        self._zoom = 5.0
         self._wheel_delta_accum = 0
         self._dark_basemap = False
         self._defer_basemap = False
@@ -547,11 +551,11 @@ class MapCanvas(QWidget):
         self._repaint_timer.setSingleShot(True)
         self._repaint_timer.timeout.connect(self.update)
 
-    def set_center(self, *, lon: float, lat: float, zoom: int | None = None) -> None:
+    def set_center(self, *, lon: float, lat: float, zoom: float | None = None) -> None:
         self._center_lon = float(lon)
         self._center_lat = float(lat)
         if zoom is not None:
-            self._zoom = int(zoom)
+            self._zoom = float(zoom)
         self.update()
 
     def clear_basemap_tiles(self) -> None:
@@ -772,7 +776,7 @@ class MapCanvas(QWidget):
         if not steps:
             return
         before_lon, before_lat = self._screen_to_lonlat(event.position().toPoint())
-        self._zoom = int(_clamp(self._zoom + steps, 2, 18))
+        self._zoom = _clamp(self._zoom + steps * ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
         after_px = lonlat_to_global_px(before_lon, before_lat, self._zoom)
         w = max(1, self.width())
         h = max(1, self.height())
@@ -857,24 +861,30 @@ class MapCanvas(QWidget):
         top_left = (center_px[0] - w / 2.0, center_px[1] - h / 2.0)
         bottom_right = (center_px[0] + w / 2.0, center_px[1] + h / 2.0)
 
-        tx0, ty0 = _tile_xy_for_global_px(top_left[0], top_left[1])
-        tx1, ty1 = _tile_xy_for_global_px(bottom_right[0], bottom_right[1])
+        tile_z = int(math.floor(self._zoom))
+        scale = 2.0 ** (self._zoom - tile_z)
+        tile_size = 256.0 * scale
+        tx0 = int(math.floor(top_left[0] / tile_size))
+        ty0 = int(math.floor(top_left[1] / tile_size))
+        tx1 = int(math.floor(bottom_right[0] / tile_size))
+        ty1 = int(math.floor(bottom_right[1] / tile_size))
 
         if not self._defer_basemap:
             for ty in range(ty0, ty1 + 1):
-                y = _clamp_tile_y(ty, self._zoom)
+                y = _clamp_tile_y(ty, tile_z)
                 for tx in range(tx0, tx1 + 1):
-                    x = _wrap_tile_x(tx, self._zoom)
-                    key = (self._zoom, x, y)
-                    sx = int(tx * 256 - top_left[0])
-                    sy = int(ty * 256 - top_left[1])
+                    x = _wrap_tile_x(tx, tile_z)
+                    key = (tile_z, x, y)
+                    sx = int(tx * tile_size - top_left[0])
+                    sy = int(ty * tile_size - top_left[1])
+                    draw_size = int(tile_size)
                     if pix := self._basemap_pixmap(key):
                         if pix.isNull():
                             continue
-                        rect = QRect(sx, sy, 256, 256)
+                        rect = QRect(sx, sy, draw_size, draw_size)
                         painter.drawPixmap(rect, pix)
                     else:
-                        self._fetch_tile(self._zoom, x, y)
+                        self._fetch_tile(tile_z, x, y)
 
         vmin_lon, vmin_lat, vmax_lon, vmax_lat = _viewport_lonlat_bounds(
             center_lon=self._center_lon,
@@ -1012,7 +1022,7 @@ class MapPickerWidget(QWidget):
         lat_span = max(max_lat - min_lat, 1e-6)
         lat_rad = math.radians(lat)
         span = max(lon_span, lat_span * max(math.cos(lat_rad), 0.2))
-        zoom = int(_clamp(math.log2(360.0 / span) - 0.5, 4.0, 14.0))
+        zoom = _clamp(math.log2(360.0 / span) - 0.5, ZOOM_MIN, 14.0)
         self.canvas.set_center(lon=lon, lat=lat, zoom=zoom)
 
 

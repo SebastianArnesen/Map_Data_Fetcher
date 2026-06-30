@@ -5,12 +5,14 @@ from typing import Any
 
 from .client import GeonorgeError, HttpClient
 from .compatibility import area_supports, format_key
+from .constants import ORDER_CHUNK_SIZE, ORDER_POLL_INTERVAL_S
 from .models import (
     AreaOption,
     AreaType,
     DatasetAvailability,
     DatasetCapabilities,
     FormatOption,
+    OrderFile,
     ProjectionOption,
 )
 
@@ -20,6 +22,7 @@ class NedlastingClient:
 
     def __init__(self, http: HttpClient):
         self._http = http
+        self._order_area_type_cache: dict[tuple[str, str], list[Any]] = {}
 
     def _base(self, base_url: str | None = None) -> str:
         return (base_url or self.BASE).rstrip("/")
@@ -190,33 +193,107 @@ class NedlastingClient:
         projection_code: str | None,
         base_url: str | None = None,
         usage: str = "Geonorge Datasets",
+        area_option: AreaOption | None = None,
     ) -> str:
+        areas: list[tuple[AreaType | None, str | None, AreaOption | None]] = []
+        if area_type and area_code:
+            areas = [(area_type, area_code, area_option)]
+        refs = self.place_batch_order(
+            metadata_uuid=metadata_uuid,
+            areas=areas,
+            format_name=format_name,
+            projection_code=projection_code,
+            base_url=base_url,
+            usage=usage,
+        )
+        return refs[0]
+
+    def place_batch_order(
+        self,
+        *,
+        metadata_uuid: str,
+        areas: list[tuple[AreaType | None, str | None, AreaOption | None]],
+        format_name: str,
+        projection_code: str | None,
+        base_url: str | None = None,
+        usage: str = "Geonorge Datasets",
+    ) -> list[str]:
+        """
+        Place one or more Geonorge orders with multiple orderLines per POST.
+
+        Returns one reference number per successful POST (multiple if chunking fallback splits the request).
+        """
+        if not areas:
+            payload = self._build_order_payload(
+                metadata_uuid, [], format_name, projection_code, base_url, usage
+            )
+            return [self._post_order_payload(payload, base_url)]
+
+        selections = list(areas)
+        refs: list[str] = []
+        chunk_size = max(1, ORDER_CHUNK_SIZE)
+        offset = 0
+        while offset < len(selections):
+            chunk = selections[offset : offset + chunk_size]
+            try:
+                payload = self._build_order_payload(
+                    metadata_uuid, chunk, format_name, projection_code, base_url, usage
+                )
+                refs.append(self._post_order_payload(payload, base_url))
+                offset += len(chunk)
+            except GeonorgeError:
+                if len(chunk) <= 1:
+                    raise
+                chunk_size = max(1, len(chunk) // 2)
+        return refs
+
+    def _build_order_payload(
+        self,
+        metadata_uuid: str,
+        areas: list[tuple[AreaType | None, str | None, AreaOption | None]],
+        format_name: str,
+        projection_code: str | None,
+        base_url: str | None,
+        usage: str,
+    ) -> dict[str, Any]:
+        order_lines: list[dict[str, Any]] = []
+        if not areas:
+            line: dict[str, Any] = {
+                "metadataUuid": metadata_uuid,
+                "formats": [{"name": format_name}],
+            }
+            if projection_code:
+                line["projections"] = [{"code": str(projection_code)}]
+            order_lines.append(line)
+        else:
+            for area_type, area_code, area_option in areas:
+                if not area_type or not area_code:
+                    continue
+                line = {
+                    "metadataUuid": metadata_uuid,
+                    "formats": [{"name": format_name}],
+                    "areas": [
+                        {
+                            "code": area_code,
+                            "type": self._resolve_order_area_type(
+                                metadata_uuid=metadata_uuid,
+                                area_type=area_type,
+                                area_code=area_code,
+                                format_name=format_name,
+                                projection_code=projection_code,
+                                base_url=base_url,
+                            ),
+                        }
+                    ],
+                }
+                if projection_code:
+                    line["projections"] = [{"code": str(projection_code)}]
+                order_lines.append(line)
+        return {"usage": usage, "orderLines": order_lines}
+
+    def _post_order_payload(self, payload: dict[str, Any], base_url: str | None) -> str:
         base = self._base(base_url)
         urls = (f"{base}/order", f"{base}/v2/order")
-        order_line: dict[str, Any] = {
-            "metadataUuid": metadata_uuid,
-            "formats": [{"name": format_name}],
-        }
-        if projection_code:
-            order_line["projections"] = [{"code": str(projection_code)}]
-        if area_type and area_code:
-            order_line["areas"] = [
-                {
-                    "code": area_code,
-                    "type": self._resolve_order_area_type(
-                        metadata_uuid=metadata_uuid,
-                        area_type=area_type,
-                        area_code=area_code,
-                        format_name=format_name,
-                        projection_code=projection_code,
-                        base_url=base_url,
-                    ),
-                }
-            ]
-        payload = {
-            "usage": usage,
-            "orderLines": [order_line],
-        }
         res = None
         for url in urls:
             res = self._http.post_json(url, payload)
@@ -246,16 +323,11 @@ class NedlastingClient:
         # Geonorge may require the raw type that carries the chosen delivery option.
         if area_type != "celle":
             return area_type
-        base = self._base(base_url)
-        res = None
-        for url in (f"{base}/v2/codelists/area/{metadata_uuid}", f"{base}/codelists/area/{metadata_uuid}"):
-            res = self._http.get_json(url)
-            if res.status_code == 200:
-                break
-        if res is None or res.status_code != 200 or not isinstance(res.json, list):
+        items = self._area_codelist_items(metadata_uuid=metadata_uuid, base_url=base_url)
+        if not items:
             return area_type
         first_matching_type: str | None = None
-        for item in res.json:
+        for item in items:
             if not isinstance(item, dict):
                 continue
             raw_type = str(item.get("type") or item.get("Type") or "")
@@ -267,6 +339,21 @@ class NedlastingClient:
             if _area_item_supports_selection(item, format_name=format_name, projection_code=projection_code):
                 return raw_type
         return first_matching_type or area_type
+
+    def _area_codelist_items(self, *, metadata_uuid: str, base_url: str | None) -> list[Any]:
+        base = self._base(base_url)
+        cache_key = (metadata_uuid, base)
+        cached = self._order_area_type_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        res = None
+        for url in (f"{base}/v2/codelists/area/{metadata_uuid}", f"{base}/codelists/area/{metadata_uuid}"):
+            res = self._http.get_json(url)
+            if res.status_code == 200:
+                break
+        items: list[Any] = res.json if res is not None and res.status_code == 200 and isinstance(res.json, list) else []
+        self._order_area_type_cache[cache_key] = items
+        return items
 
     def validate_area_format_projection(
         self,
@@ -324,42 +411,79 @@ class NedlastingClient:
         *,
         base_url: str | None = None,
         timeout_s: float = 60 * 30,
-        poll_s: float = 10.0,
+        poll_s: float = ORDER_POLL_INTERVAL_S,
     ) -> str:
-        base = self._base(base_url)
-        urls = (f"{base}/order/{reference_number}", f"{base}/v2/order/{reference_number}")
         start = time.time()
         while True:
-            res = None
-            for url in urls:
-                res = self._http.get_json(url)
-                if res.status_code != 404:
-                    break
-            if res is None:
-                raise GeonorgeError("No order status endpoint attempted.")
-            if res.status_code in (401, 403):
-                raise PermissionError("Login required")
-            if res.status_code != 200:
-                # Service can be busy; keep polling until timeout.
-                if time.time() - start > timeout_s:
-                    raise GeonorgeError(f"Timed out polling order status ({res.status_code}).")
-                time.sleep(poll_s)
-                continue
-
-            data = res.json
-            if isinstance(data, list) and data:
-                data = data[0]
-            if not isinstance(data, dict):
-                raise GeonorgeError("Unexpected order status response.")
-            files = data.get("files") or []
-            if isinstance(files, list) and files:
-                url = files[0].get("downloadUrl")
-                if url:
-                    return str(url)
-
+            files = self.poll_order_files(reference_number, base_url=base_url)
+            for order_file in files:
+                if order_file.is_downloadable and order_file.download_url:
+                    return order_file.download_url
             if time.time() - start > timeout_s:
                 raise GeonorgeError("Timed out waiting for files.")
             time.sleep(poll_s)
+
+    def poll_order_files(
+        self,
+        reference_number: str,
+        *,
+        base_url: str | None = None,
+    ) -> list[OrderFile]:
+        base = self._base(base_url)
+        urls = (f"{base}/order/{reference_number}", f"{base}/v2/order/{reference_number}")
+        res = None
+        for url in urls:
+            res = self._http.get_json(url)
+            if res.status_code != 404:
+                break
+        if res is None:
+            raise GeonorgeError("No order status endpoint attempted.")
+        if res.status_code in (401, 403):
+            raise PermissionError("Login required")
+        if res.status_code != 200:
+            raise GeonorgeError(f"Order status failed ({res.status_code}).")
+        data = res.json
+        if isinstance(data, list) and data:
+            data = data[0]
+        if not isinstance(data, dict):
+            raise GeonorgeError("Unexpected order status response.")
+        return parse_order_files(data.get("files") or [])
+
+
+def parse_order_files(raw_files: Any) -> list[OrderFile]:
+    if not isinstance(raw_files, list):
+        return []
+    out: list[OrderFile] = []
+    for item in raw_files:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            OrderFile(
+                file_id=_str_or_none(item.get("fileId") or item.get("FileId")),
+                area_code=_str_or_none(item.get("area") or item.get("Area")),
+                download_url=_str_or_none(item.get("downloadUrl") or item.get("DownloadUrl")),
+                status=_str_or_none(item.get("status") or item.get("Status")),
+                name=_str_or_none(item.get("name") or item.get("Name")),
+                format_name=_str_or_none(item.get("format") or item.get("Format")),
+                projection_code=_str_or_none(item.get("projection") or item.get("Projection")),
+            )
+        )
+    return out
+
+
+def all_packaging_complete(files: list[OrderFile], *, expected_area_codes: set[str]) -> bool:
+    """True when every expected area has a downloadable file."""
+    if not expected_area_codes:
+        return any(f.is_downloadable for f in files)
+    ready = {f.area_code for f in files if f.is_downloadable and f.area_code}
+    return expected_area_codes <= ready
+
+
+def _str_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _parse_areas_payload(payload: Any) -> dict[AreaType, list[AreaOption]]:

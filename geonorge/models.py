@@ -55,6 +55,23 @@ class AreaOption:
 
 
 @dataclass(frozen=True)
+class OrderFile:
+    """One file entry from a Geonorge order status response."""
+
+    file_id: str | None
+    area_code: str | None
+    download_url: str | None
+    status: str | None
+    name: str | None
+    format_name: str | None = None
+    projection_code: str | None = None
+
+    @property
+    def is_downloadable(self) -> bool:
+        return bool(self.download_url)
+
+
+@dataclass(frozen=True)
 class DatasetCapabilities:
     supports_area_selection: bool
     supports_format_selection: bool

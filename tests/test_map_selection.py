@@ -50,6 +50,13 @@ def test_satellittbilder_100kmruter_default_url() -> None:
     assert url.endswith("/Satellittbilder_100kmruter_ETRS89utm33.json")
 
 
+def test_ruter_entinelskyfritt_default_url() -> None:
+    url = geojson_url_for_map_selection_layer("Ruter_entinelSkyfritt2018Uint16")
+    assert url is not None
+    assert url.endswith("/tema/Ruter_entinelSkyfritt2018Uint16.geojson")
+    assert "Satellittbilder_100kmruter" not in url
+
+
 def test_raster_n250_default_url() -> None:
     url = geojson_url_for_map_selection_layer("raster-n250")
     assert url is not None
@@ -90,6 +97,8 @@ def test_infer_source_epsg_from_layer_and_projection() -> None:
     assert infer_source_epsg(layer_id="raster-32", projection_code=None) == 25833
     assert infer_source_epsg(layer_id="raster-35", projection_code="25835") == 25833
     assert infer_source_epsg(layer_id="Satellittbilder-100kmruter-utm33", projection_code=None) == 25833
+    assert infer_source_epsg(layer_id="Ruter_entinelSkyfritt2018Uint16", projection_code=None) is None
+    assert infer_source_epsg(layer_id="ruter_entinelskyfritt2018uint16", projection_code="25833") is None
     assert infer_source_epsg(layer_id="dtm-sjo-25", projection_code=None) == 4326
     assert infer_source_epsg(layer_id="dtm-sjo-50", projection_code=None) == 25833
 
@@ -143,6 +152,44 @@ def test_match_area_grid_codes_uses_area_name_for_label() -> None:
 
 
 @pytest.mark.network
+def test_sentinel_skyfritt_grid_matches_all_areas() -> None:
+    from app.map_picker import build_grid_cell_shapes, match_area_grid_codes, parse_geojson_grid_cells
+    from geonorge.models import AreaOption
+
+    layer_id = "Ruter_entinelSkyfritt2018Uint16"
+    metadata_uuid = "60ecee84-bd74-430c-92dc-a1a01a05df9e"
+    url = geojson_url_for_map_selection_layer(layer_id)
+    assert url is not None
+    assert url.endswith("/tema/Ruter_entinelSkyfritt2018Uint16.geojson")
+
+    text = requests.get(url, timeout=60).text
+    parsed = parse_geojson_grid_cells(text)
+    assert len(parsed) == 88
+    assert any(cell.code == "T32VKK" for cell in parsed)
+
+    source_epsg = infer_source_epsg(layer_id=layer_id, projection_code=None)
+    assert source_epsg is None
+    shapes = {shape.code: shape for shape in build_grid_cell_shapes(parsed, source_epsg=source_epsg)}
+
+    areas_raw = requests.get(
+        f"https://nedlasting.geonorge.no/api/codelists/area/{metadata_uuid}",
+        timeout=60,
+    ).json()
+    area_codes = [
+        str(a.get("code") or a.get("Code"))
+        for a in areas_raw
+        if str(a.get("type") or a.get("Type") or "").lower() == "celle"
+    ]
+    assert len(area_codes) == 88
+
+    areas = [AreaOption(type="celle", code=code, name=code) for code in area_codes]
+    maps = match_area_grid_codes(shapes, parsed, areas)
+    assert len(maps.area_to_grid) == 88
+    assert len(shapes) - len(maps.grid_to_area) == 0
+    assert maps.area_to_grid["T32VKK"] == "T32VKK"
+
+
+@pytest.mark.network
 def test_satellite_grid_maps_mgrs_area_codes() -> None:
     pytest.importorskip("mgrs")
     from app.map_picker import build_grid_cell_shapes, match_area_grid_codes, parse_geojson_grid_cells
@@ -181,4 +228,16 @@ def test_webmercator_roundtrip_is_reasonable() -> None:
     lon2, lat2 = global_px_to_lonlat(x, y, zoom)
     assert abs(lon2 - lon) < 1e-6
     assert abs(lat2 - lat) < 1e-6
+
+
+def test_fractional_zoom_sits_between_integer_levels() -> None:
+    lon, lat = 10.75, 59.91
+    x5, y5 = lonlat_to_global_px(lon, lat, 5.0)
+    x55, y55 = lonlat_to_global_px(lon, lat, 5.5)
+    x6, y6 = lonlat_to_global_px(lon, lat, 6.0)
+    assert x5 < x55 < x6
+    assert y5 < y55 < y6
+    lon55, lat55 = global_px_to_lonlat(x55, y55, 5.5)
+    assert abs(lon55 - lon) < 1e-6
+    assert abs(lat55 - lat) < 1e-6
 

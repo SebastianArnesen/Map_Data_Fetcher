@@ -15,6 +15,31 @@ class GeonorgeError(RuntimeError):
     pass
 
 
+class NetworkError(GeonorgeError):
+    """Connection or timeout failure talking to Geonorge."""
+
+
+def is_network_error(exc: BaseException) -> bool:
+    if isinstance(exc, NetworkError):
+        return True
+    if isinstance(exc, GeonorgeError):
+        text = str(exc).casefold()
+        markers = (
+            "network error",
+            "connection",
+            "timed out",
+            "timeout",
+            "name resolution",
+            "getaddrinfo",
+            "download failed",
+        )
+        return any(marker in text for marker in markers)
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and cause is not exc:
+        return is_network_error(cause)
+    return isinstance(exc, (requests.Timeout, requests.ConnectionError))
+
+
 @dataclass(frozen=True)
 class HttpResult:
     status_code: int
@@ -60,7 +85,7 @@ class HttpClient:
                 if attempt >= retries:
                     break
                 time.sleep(backoff_s * (2**attempt))
-        raise GeonorgeError(f"Network error calling GET {url}: {last_exc}")
+        raise NetworkError(f"Network error calling GET {url}: {last_exc}")
 
     def get_text(
         self,
@@ -80,7 +105,7 @@ class HttpClient:
                 if attempt >= retries:
                     break
                 time.sleep(backoff_s * (2**attempt))
-        raise GeonorgeError(f"Network error calling GET {url}: {last_exc}")
+        raise NetworkError(f"Network error calling GET {url}: {last_exc}")
 
     def post_json(
         self,
@@ -105,7 +130,7 @@ class HttpClient:
                 if attempt >= retries:
                     break
                 time.sleep(backoff_s * (2**attempt))
-        raise GeonorgeError(f"Network error calling POST {url}: {last_exc}")
+        raise NetworkError(f"Network error calling POST {url}: {last_exc}")
 
     def content_length(self, url: str) -> int | None:
         try:
@@ -123,29 +148,46 @@ class HttpClient:
         target_path: str,
         *,
         chunk_size: int = 1024 * 256,
-        retries: int = 2,
+        retries: int = 3,
         backoff_s: float = 1.0,
+        timeout_s: float = 120.0,
         progress: Callable[[int, int | None], None] | None = None,
+        cancel: Callable[[], bool] | None = None,
     ) -> None:
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                with self._session().get(url, stream=True, timeout=self._timeout) as r:
+                with self._session().get(url, stream=True, timeout=timeout_s) as r:
                     r.raise_for_status()
                     raw_total = r.headers.get("Content-Length")
                     total = int(raw_total) if raw_total and raw_total.isdigit() else None
                     downloaded = 0
                     with open(target_path, "wb") as f:
                         for chunk in r.iter_content(chunk_size=chunk_size):
+                            if cancel and cancel():
+                                raise DownloadCancelledError("Download cancelled.")
                             if chunk:
                                 f.write(chunk)
                                 downloaded += len(chunk)
                                 if progress:
                                     progress(downloaded, total)
                 return
-            except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+            except DownloadCancelledError:
+                raise
+            except (requests.Timeout, requests.ConnectionError) as e:
                 last_exc = e
                 if attempt >= retries:
                     break
                 time.sleep(backoff_s * (2**attempt))
+            except requests.HTTPError as e:
+                last_exc = e
+                if attempt >= retries:
+                    break
+                time.sleep(backoff_s * (2**attempt))
+        if isinstance(last_exc, (requests.Timeout, requests.ConnectionError)):
+            raise NetworkError(f"Download failed for {url}: {last_exc}")
         raise GeonorgeError(f"Download failed for {url}: {last_exc}")
+
+
+class DownloadCancelledError(GeonorgeError):
+    """Raised when a download is cancelled mid-transfer."""

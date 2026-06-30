@@ -53,6 +53,21 @@ def build_message_box_stylesheet(*, light_mode: bool) -> str:
         QMessageBox QPushButton:default {{
             border-color: {s.accent};
         }}
+        QMessageBox QPushButton#messageBoxDestructiveButton {{
+            background: {s.clear};
+            color: {s.white};
+            border: 1px solid {s.clear};
+        }}
+        QMessageBox QPushButton#messageBoxDestructiveButton:hover {{
+            background: {s.clear_hover};
+            border-color: {s.clear_hover};
+            color: {s.white};
+        }}
+        QMessageBox QPushButton#messageBoxDestructiveButton:pressed {{
+            background: {s.clear_pressed};
+            border-color: {s.clear_pressed};
+            color: {s.white};
+        }}
     """
 
 
@@ -105,6 +120,68 @@ def _resolve_light_mode(parent: QWidget | None) -> bool:
             return bool(current._light_mode)
         current = current.parentWidget()
     return False
+
+
+def apply_destructive_button(button: QPushButton) -> None:
+    button.setObjectName("messageBoxDestructiveButton")
+
+
+def themed_confirm_box(
+    parent: QWidget | None,
+    *,
+    title: str,
+    text: str,
+    informative_text: str = "",
+    accept_label: str = "Yes",
+    reject_label: str = "No",
+    destructive_accept: bool = False,
+    default_accept: bool = False,
+) -> bool:
+    box = themed_message_box(
+        parent,
+        title=title,
+        text=text,
+        informative_text=informative_text,
+        icon="none",
+    )
+    accept_btn = box.addButton(accept_label, QMessageBox.AcceptRole)
+    reject_btn = box.addButton(reject_label, QMessageBox.RejectRole)
+    if destructive_accept:
+        apply_destructive_button(accept_btn)
+    box.setDefaultButton(accept_btn if default_accept else reject_btn)
+    box.exec()
+    return box.clickedButton() is accept_btn
+
+
+def show_connection_lost_dialog(
+    parent: QWidget | None,
+    *,
+    succeeded: int,
+    failed: int,
+    total: int,
+    failed_labels: list[str] | None = None,
+) -> None:
+    if failed <= 0:
+        return
+    if succeeded > 0:
+        text = f"Downloaded {succeeded} of {total} items. {failed} failed due to connection loss."
+    else:
+        text = "The download was interrupted because the connection to Geonorge was lost."
+    informative = "Completed files are kept. You can retry the failed items."
+    if failed_labels:
+        preview = "\n".join(failed_labels[:8])
+        if len(failed_labels) > 8:
+            preview += f"\n… and {len(failed_labels) - 8} more"
+        informative = f"{informative}\n\nFailed:\n{preview}"
+    box = themed_message_box(
+        parent,
+        title="Connection lost",
+        text=text,
+        informative_text=informative,
+        icon="warning",
+    )
+    box.addButton("OK", QMessageBox.AcceptRole)
+    box.exec()
 
 
 def themed_message_box(
