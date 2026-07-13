@@ -16,6 +16,10 @@ class KartkatalogMetadata:
     original_categories: list[str]
     download_api_base: str | None
     metadata_updated: str | None
+    access_is_restricted: bool = False
+    access_is_protected: bool = False
+    access_is_opendata: bool = False
+    data_access: str | None = None
 
 
 class KartkatalogCatalog:
@@ -86,12 +90,17 @@ class KartkatalogCatalog:
         title = payload.get("Title") or payload.get("NorwegianTitle") or payload.get("EnglishTitle")
         clean_title = title.strip() if isinstance(title, str) and title.strip() else None
         original_categories = _extract_category_tags(payload)
+        access = _extract_access_flags(payload)
         return KartkatalogMetadata(
             title=clean_title,
             categories=normalize_categories(original_categories),
             original_categories=original_categories,
             download_api_base=_extract_download_api_base(payload),
             metadata_updated=_extract_metadata_updated(payload),
+            access_is_restricted=access.access_is_restricted,
+            access_is_protected=access.access_is_protected,
+            access_is_opendata=access.access_is_opendata,
+            data_access=access.data_access,
         )
 
     def get_title_and_categories(self, metadata_uuid: str) -> tuple[str | None, list[str], list[str], str | None]:
@@ -139,6 +148,34 @@ def _extract_title(item: dict[str, Any]) -> str | None:
             if isinstance(v, str) and v.strip():
                 return v.strip()
     return None
+
+
+@dataclass(frozen=True)
+class KartkatalogAccessFlags:
+    access_is_restricted: bool = False
+    access_is_protected: bool = False
+    access_is_opendata: bool = False
+    data_access: str | None = None
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() in ("true", "1", "yes")
+    return bool(value) if value is not None else False
+
+
+def _extract_access_flags(item: dict[str, Any]) -> KartkatalogAccessFlags:
+    data_access = item.get("DataAccess")
+    clean_data_access = data_access.strip() if isinstance(data_access, str) and data_access.strip() else None
+    is_open = _as_bool(item.get("AccessIsOpendata")) or _as_bool(item.get("IsOpenData"))
+    return KartkatalogAccessFlags(
+        access_is_restricted=_as_bool(item.get("AccessIsRestricted")),
+        access_is_protected=_as_bool(item.get("AccessIsProtected")),
+        access_is_opendata=is_open,
+        data_access=clean_data_access,
+    )
 
 
 def _extract_metadata_updated(item: dict[str, Any]) -> str | None:

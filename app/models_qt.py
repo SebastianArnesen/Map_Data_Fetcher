@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from geonorge.models import DatasetAvailability
 from app.filter_index import format_filter_key
 from app.theme import (
     DARK,
@@ -48,6 +49,20 @@ DATASET_COL_TITLE = 0
 DATASET_COL_COPY = 1
 DATASET_COL_TAGS = 2
 DATASET_COL_LINK = 3
+
+
+def dataset_shows_padlock(ds: DatasetAvailability) -> bool:
+    return bool(ds.login_required or ds.access_is_restricted or ds.access_is_protected)
+
+
+def dataset_padlock_tooltip(ds: DatasetAvailability) -> str | None:
+    if not dataset_shows_padlock(ds):
+        return None
+    if ds.data_access:
+        return ds.data_access
+    if ds.login_required:
+        return "Krever innlogging"
+    return "Tilgangsbegrenset"
 
 
 @dataclass(frozen=True)
@@ -518,6 +533,29 @@ def paint_external_link_icon(
     painter.drawLine(QPointF(ax1, ay1), QPointF(ax1, ay1 + arm))
 
 
+def paint_padlock_icon(
+    painter: QPainter,
+    rect: QRect,
+    *,
+    bright: bool,
+    light_mode: bool = False,
+) -> None:
+    color = copy_icon_color(light_mode=light_mode, bright=bright)
+    center = rect.center()
+    cx, cy = float(center.x()), float(center.y())
+    pen = QPen(color, 1.35, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+
+    body_w, body_h = 8.0, 6.5
+    body = QRectF(cx - body_w / 2, cy - 0.5, body_w, body_h)
+    painter.drawRoundedRect(body, 1.5, 1.5)
+
+    shackle_w, shackle_h = 5.0, 4.5
+    shackle = QRectF(cx - shackle_w / 2, cy - shackle_h - 1.5, shackle_w, shackle_h)
+    painter.drawArc(shackle, 0 * 16, 180 * 16)
+
+
 class ClipboardCopyWidget(QWidget):
     """Minimal clipboard affordance matching the dataset table copy column."""
 
@@ -825,7 +863,21 @@ class DatasetItemDelegate(QStyledItemDelegate):
             font.setWeight(QFont.DemiBold)
         painter.setFont(font)
         painter.setPen(color)
-        painter.drawText(option.rect.adjusted(8, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, text)
+
+        text_rect = option.rect.adjusted(8, 0, -6, 0)
+        if col == DATASET_COL_TITLE:
+            payload = index.data(Qt.UserRole + 1)
+            if isinstance(payload, DatasetAvailability) and dataset_shows_padlock(payload):
+                lock_rect = QRect(option.rect.left() + 6, option.rect.top(), 16, option.rect.height())
+                paint_padlock_icon(
+                    painter,
+                    lock_rect,
+                    bright=is_hover_title or is_selected,
+                    light_mode=light_mode,
+                )
+                text_rect = option.rect.adjusted(22, 0, -6, 0)
+
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
         painter.restore()
 
 

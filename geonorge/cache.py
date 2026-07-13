@@ -69,6 +69,10 @@ def dataset_to_dict(it: DatasetAvailability) -> dict[str, Any]:
         "categories": it.categories,
         "original_categories": it.original_categories,
         "login_required": it.login_required,
+        "access_is_restricted": it.access_is_restricted,
+        "access_is_protected": it.access_is_protected,
+        "access_is_opendata": it.access_is_opendata,
+        "data_access": it.data_access,
         "enriched": it.enriched,
         "catalog_metadata_updated": it.catalog_metadata_updated,
         "enrichment_version": it.enrichment_version,
@@ -110,6 +114,10 @@ def dataset_from_dict(d: dict[str, Any]) -> DatasetAvailability:
         categories=normalize_categories(original_categories),
         original_categories=original_categories,
         login_required=bool(d.get("login_required", False)),
+        access_is_restricted=bool(d.get("access_is_restricted", False)),
+        access_is_protected=bool(d.get("access_is_protected", False)),
+        access_is_opendata=bool(d.get("access_is_opendata", False)),
+        data_access=d.get("data_access") if isinstance(d.get("data_access"), str) else None,
         enriched=bool(d.get("enriched", False)),
         catalog_metadata_updated=(
             d.get("catalog_metadata_updated") if isinstance(d.get("catalog_metadata_updated"), str) else None

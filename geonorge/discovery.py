@@ -104,6 +104,7 @@ class DiscoveryService:
             d.categories = meta.categories
             d.original_categories = meta.original_categories
             d.catalog_metadata_updated = meta.metadata_updated
+            _apply_access_from_meta(d, meta)
             download_api_base = meta.download_api_base or self.nedlasting.BASE
 
             if cached and _can_skip_nedlasting(cached, meta.metadata_updated):
@@ -155,6 +156,14 @@ class DiscoveryService:
                 self.index.upsert_one(d, enriched=True)
             return EnrichOutcome(d, "full")
         except PermissionError:
+            access_kwargs: dict = {}
+            if meta is not None:
+                access_kwargs = {
+                    "access_is_restricted": meta.access_is_restricted,
+                    "access_is_protected": meta.access_is_protected,
+                    "access_is_opendata": meta.access_is_opendata,
+                    "data_access": meta.data_access,
+                }
             updated = replace(
                 d,
                 login_required=True,
@@ -162,6 +171,7 @@ class DiscoveryService:
                 enrichment_version=ENRICHMENT_VERSION,
                 catalog_metadata_updated=meta.metadata_updated if meta else d.catalog_metadata_updated,
                 download_api_base=download_api_base if meta else d.download_api_base,
+                **access_kwargs,
             )
             if write:
                 self.index.upsert_one(updated, enriched=True, last_error="Login required")
@@ -325,7 +335,15 @@ def _apply_catalog_fields(
     cached.original_categories = meta.original_categories
     cached.catalog_metadata_updated = meta.metadata_updated
     cached.download_api_base = download_api_base
+    _apply_access_from_meta(cached, meta)
     return cached
+
+
+def _apply_access_from_meta(ds: DatasetAvailability, meta) -> None:
+    ds.access_is_restricted = meta.access_is_restricted
+    ds.access_is_protected = meta.access_is_protected
+    ds.access_is_opendata = meta.access_is_opendata
+    ds.data_access = meta.data_access
 
 
 def _can_skip_nedlasting(cached: DatasetAvailability, metadata_updated: str | None) -> bool:

@@ -88,6 +88,10 @@ class DatasetAvailability:
     categories: list[str] = field(default_factory=list)
     original_categories: list[str] = field(default_factory=list)
     login_required: bool = False
+    access_is_restricted: bool = False
+    access_is_protected: bool = False
+    access_is_opendata: bool = False
+    data_access: str | None = None
     enriched: bool = False
     # ISO timestamp from Kartkatalog DateMetadataUpdated (used to skip unchanged records).
     catalog_metadata_updated: str | None = None

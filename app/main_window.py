@@ -124,6 +124,7 @@ from app.models_qt import (
     clear_dataset_index_widgets,
     clear_list_index_widgets,
     clear_tree_index_widgets,
+    dataset_padlock_tooltip,
 )
 from app.theme import (
     SHARED,
@@ -2900,6 +2901,13 @@ class MainWindow(QMainWindow):
         slug = re.sub(r"[^0-9a-zA-ZæøåÆØÅ]+", "-", ds.title).strip("-").lower()
         return f"https://kartkatalog.geonorge.no/metadata/{quote(slug)}/{ds.metadata_uuid}"
 
+    def _dataset_primary_tooltip(self, ds: DatasetAvailability) -> str:
+        lines = [ds.title, ds.metadata_uuid]
+        access_tip = dataset_padlock_tooltip(ds)
+        if access_tip:
+            lines.append(access_tip)
+        return "\n".join(lines)
+
     def _open_dataset_in_browser(self, ds: DatasetAvailability) -> None:
         QDesktopServices.openUrl(QUrl(self._dataset_metadata_url(ds)))
 
@@ -3321,8 +3329,9 @@ class MainWindow(QMainWindow):
         if self._selected_dataset:
             ds = self._selected_dataset
             tags = self._dataset_original_category_label(ds)
-            uuid = ds.metadata_uuid
-            tip = f"{ds.title}\n{uuid}\n{tags}" if tags else f"{ds.title}\n{uuid}"
+            tip = self._dataset_primary_tooltip(ds)
+            if tags:
+                tip = f"{tip}\n{tags}"
             self._add_selected_group_header("Dataset", add_top_gap=not first_group)
             first_group = False
             self._add_selected_row(
@@ -3765,7 +3774,7 @@ class MainWindow(QMainWindow):
         for ds in visible:
             rows.append((ds.title, self._dataset_original_category_label(ds), ds))
             pid = id(ds)
-            primary_tt[pid] = f"{ds.title}\n{ds.metadata_uuid}"
+            primary_tt[pid] = self._dataset_primary_tooltip(ds)
             link_tt[pid] = self._dataset_metadata_url(ds)
             tip_tags = self._dataset_tags_table_tooltip(ds)
             if tip_tags:
@@ -5013,6 +5022,22 @@ class MainWindow(QMainWindow):
     def _on_download_error(self, tb: str) -> None:
         logger.error("Download failed: %s", tb)
 
+    @staticmethod
+    def _download_error_key(exc: BaseException) -> str:
+        return str(exc).strip()
+
+    @staticmethod
+    def _is_dataset_wide_download_error(error_text: str) -> bool:
+        lower = error_text.casefold()
+        markers = (
+            "restricted datasets",
+            "does not have required role",
+            "login required",
+            "requires login",
+            "authorization",
+        )
+        return any(marker in lower for marker in markers)
+
     def _download_with_per_area_prompts(self) -> None:
         ds = self._selected_dataset
         areas_eff = self._effective_areas()
@@ -5031,8 +5056,12 @@ class MainWindow(QMainWindow):
         projection_part = proj.code if proj else "any"
         current_format = fmt_eff
         area_type = self._active_area_type()
+        skip_all_error: str | None = None
+        abort_remaining_areas = False
 
         for a in list(areas_eff):
+            if abort_remaining_areas:
+                break
             if not area_supports(
                 a,
                 projection_code=projection_code,
@@ -5070,7 +5099,11 @@ class MainWindow(QMainWindow):
                     self._http.download(url, str(target))
                     break
                 except Exception as e:
-                    # Prompt: skip or choose a different format for this area.
+                    error_text = self._download_error_key(e)
+                    if skip_all_error is not None and error_text == skip_all_error:
+                        break
+
+                    # Prompt: skip, skip all matching failures, or choose a different format.
                     choices = [f.label for f in (ds.formats or [])]
                     msg = themed_message_box(
                         self,
@@ -5079,8 +5112,14 @@ class MainWindow(QMainWindow):
                         icon="warning",
                     )
                     skip_btn = msg.addButton("Skip this area", QMessageBox.RejectRole)
+                    skip_all_btn = msg.addButton("Skip all", QMessageBox.ActionRole)
                     msg.addButton("Choose another format…", QMessageBox.AcceptRole)
                     msg.exec()
+                    if msg.clickedButton() is skip_all_btn:
+                        skip_all_error = error_text
+                        if self._is_dataset_wide_download_error(error_text):
+                            abort_remaining_areas = True
+                        break
                     if msg.clickedButton() is skip_btn:
                         break
                     if not choices:

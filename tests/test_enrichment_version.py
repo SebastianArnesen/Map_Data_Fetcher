@@ -11,7 +11,7 @@ from geonorge.models import DatasetAvailability, DatasetCapabilities
 
 
 def test_enrichment_version_is_current() -> None:
-    assert ENRICHMENT_VERSION == 6
+    assert ENRICHMENT_VERSION == 7
 
 
 def test_legacy_v3_cell_cache_needs_capabilities_reenrich() -> None:

@@ -2,7 +2,8 @@
 # v4: capabilities.map_selection_layer (Open map button for Cell areas).
 # v5: per-area formats_by_projection (projection→format compatibility).
 # v6: intersect formats_by_projection when merging duplicate area rows from API.
-ENRICHMENT_VERSION = 6
+# v7: Kartkatalog access flags (padlock indicator for restricted datasets).
+ENRICHMENT_VERSION = 7
 
 # Background enrichment: modest parallelism to stay polite to Geonorge APIs.
 ENRICH_MAX_WORKERS = 5
