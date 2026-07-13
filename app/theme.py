@@ -1,5 +1,5 @@
 """
-Central UI theme definitions for Geonorge Datasets.
+Central UI theme definitions for Map Data Fetcher.
 
 Edit colors here; `build_stylesheet()` turns them into Qt Style Sheets (QSS).
 Custom-painted widgets (checkboxes, dataset rows, icons) use the same palettes

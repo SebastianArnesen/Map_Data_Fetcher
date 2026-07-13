@@ -18,19 +18,19 @@ jobs:
           - os: windows-latest
             artifact_name: windows
             upload_glob: |
-              dist/GeonorgeDatasets.exe
-              dist/GeonorgeDatasetsSetup.exe
+              dist/MapDataFetcher.exe
+              dist/MapDataFetcherSetup.exe
           - os: macos-latest
             artifact_name: macos-arm64
             mac_arch: arm64
-            upload_glob: dist/GeonorgeDatasets-*-macos-arm64.dmg
+            upload_glob: dist/MapDataFetcher-*-macos-arm64.dmg
           - os: macos-latest
             artifact_name: macos-x86_64
             mac_arch: x86_64
-            upload_glob: dist/GeonorgeDatasets-*-macos-x86_64.dmg
+            upload_glob: dist/MapDataFetcher-*-macos-x86_64.dmg
           - os: ubuntu-latest
             artifact_name: linux
-            upload_glob: dist/GeonorgeDatasets-*-linux-*.tar.gz
+            upload_glob: dist/MapDataFetcher-*-linux-*.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +82,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           .\build_exe.ps1
           .\build_installer.ps1
-          Get-ChildItem dist\GeonorgeDatasets.exe, dist\GeonorgeDatasetsSetup.exe | Format-Table Name, Length
+          Get-ChildItem dist\MapDataFetcher.exe, dist\MapDataFetcherSetup.exe | Format-Table Name, Length
 
       - name: Build macOS app and DMG
         if: runner.os == 'macOS'
@@ -91,15 +91,15 @@ jobs:
         run: |
           chmod +x build_exe.sh build_dmg.sh
           ./build_exe.sh
-          ls -lh dist/GeonorgeDatasets.app dist/GeonorgeDatasets-*-macos-*.dmg
-          file dist/GeonorgeDatasets.app/Contents/MacOS/GeonorgeDatasets
+          ls -lh dist/MapDataFetcher.app dist/MapDataFetcher-*-macos-*.dmg
+          file dist/MapDataFetcher.app/Contents/MacOS/MapDataFetcher
 
       - name: Build Linux tarball
         if: runner.os == 'Linux'
         run: |
           chmod +x build_exe.sh
           ./build_exe.sh
-          ls -lh dist/GeonorgeDatasets dist/GeonorgeDatasets-*-linux-*.tar.gz
+          ls -lh dist/MapDataFetcher dist/MapDataFetcher-*-linux-*.tar.gz
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4

@@ -69,7 +69,7 @@ if IS_LINUX:
         a.scripts,
         [],
         exclude_binaries=True,
-        name="GeonorgeDatasets",
+        name="MapDataFetcher",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -88,7 +88,7 @@ if IS_LINUX:
         strip=False,
         upx=False,
         upx_exclude=[],
-        name="GeonorgeDatasets",
+        name="MapDataFetcher",
     )
 elif IS_MAC:
     exe = EXE(
@@ -96,7 +96,7 @@ elif IS_MAC:
         a.scripts,
         [],
         exclude_binaries=True,
-        name="GeonorgeDatasets",
+        name="MapDataFetcher",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -115,15 +115,17 @@ elif IS_MAC:
         strip=False,
         upx=False,
         upx_exclude=[],
-        name="GeonorgeDatasets",
+        name="MapDataFetcher",
     )
     app = BUNDLE(
         coll,
-        name="GeonorgeDatasets.app",
+        name="MapDataFetcher.app",
         icon=icon_path,
-        bundle_identifier="com.github.sebastianarnesen.geonorge-datasets",
+        bundle_identifier="com.github.sebastianarnesen.map-data-fetcher",
         info_plist={
             "NSHighResolutionCapable": "True",
+            "CFBundleName": "Map Data Fetcher",
+            "CFBundleDisplayName": "Map Data Fetcher",
             "CFBundleShortVersionString": APP_VERSION,
             "LSMinimumSystemVersion": "12.0",
         },
@@ -135,7 +137,7 @@ else:
         a.binaries,
         a.datas,
         [],
-        name="GeonorgeDatasets",
+        name="MapDataFetcher",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,

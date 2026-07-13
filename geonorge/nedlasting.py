@@ -192,7 +192,7 @@ class NedlastingClient:
         format_name: str,
         projection_code: str | None,
         base_url: str | None = None,
-        usage: str = "Geonorge Datasets",
+        usage: str = "Map Data Fetcher",
         area_option: AreaOption | None = None,
     ) -> str:
         areas: list[tuple[AreaType | None, str | None, AreaOption | None]] = []
@@ -216,7 +216,7 @@ class NedlastingClient:
         format_name: str,
         projection_code: str | None,
         base_url: str | None = None,
-        usage: str = "Geonorge Datasets",
+        usage: str = "Map Data Fetcher",
     ) -> list[str]:
         """
         Place one or more Geonorge orders with multiple orderLines per POST.

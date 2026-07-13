@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from app import APP_DISPLAY_NAME
 from app.logging_config import log_dir
 from app.theme import palette_for
 
@@ -207,7 +208,7 @@ def _present_crash_dialog(report_path: Path, summary: str, *, light_mode: bool) 
         except Exception:
             logger.exception("Qt fallback message box failed")
             _native_fatal_message(
-                "Geonorge Datasets — Error",
+                f"{APP_DISPLAY_NAME} — Error",
                 f"The application crashed.\n\nDetails saved to:\n{report_path}\n\n{summary[:1500]}",
             )
     return False
@@ -294,7 +295,7 @@ def report_uncaught_exception(
     except Exception:
         logger.exception("Crash reporting failed")
         _native_fatal_message(
-            "Geonorge Datasets — Error",
+            f"{APP_DISPLAY_NAME} — Error",
             "".join(traceback.format_exception(exc_type, exc_value, exc_tb))[:3000],
         )
         return True
@@ -346,7 +347,7 @@ def _qt_message_handler(mode, context, message) -> None:  # noqa: ANN001
         path.write_text(f"{existing}\n\n{text}".strip(), encoding="utf-8")
     except OSError:
         pass
-    _native_fatal_message("Geonorge Datasets — Fatal error", text)
+    _native_fatal_message(f"{APP_DISPLAY_NAME} — Fatal error", text)
 
 
 class GeonorgeApplication(QApplication):
@@ -388,7 +389,7 @@ def install_crash_handler() -> None:
             text = "\n".join(report)
             _write_crash_report(text)
             _native_fatal_message(
-                "Geonorge Datasets — Fatal error",
+                f"{APP_DISPLAY_NAME} — Fatal error",
                 "The application crashed unexpectedly.\n\n"
                 f"Details were saved under:\n{crash_reports_dir()}",
             )

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wrap dist/GeonorgeDatasets.app in a drag-to-Applications .dmg (macOS only).
+# Wrap dist/MapDataFetcher.app in a drag-to-Applications .dmg (macOS only).
 
 set -euo pipefail
 
@@ -10,8 +10,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-app="dist/GeonorgeDatasets.app"
-dmg="${DMG_OUTPUT:-dist/GeonorgeDatasets.dmg}"
+app="dist/MapDataFetcher.app"
+dmg="${DMG_OUTPUT:-dist/MapDataFetcher.dmg}"
 staging="dist/dmg-staging"
 
 if [[ ! -d "$app" ]]; then
@@ -26,7 +26,7 @@ cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 
 hdiutil create \
-  -volname "Geonorge Datasets" \
+  -volname "Map Data Fetcher" \
   -srcfolder "$staging" \
   -ov \
   -format UDZO \

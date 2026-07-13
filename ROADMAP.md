@@ -36,8 +36,8 @@
 
 ### Packaging for other people (Windows)
 
-- Build exe with PyInstaller (`build_exe.ps1` / `GeonorgeDatasets.spec`)
-- Build installer with Inno Setup (`build_installer.ps1` / `installer/GeonorgeDatasets.iss`)
+- Build exe with PyInstaller (`build_exe.ps1` / `MapDataFetcher.spec`)
+- Build installer with Inno Setup (`build_installer.ps1` / `installer/MapDataFetcher.iss`)
 - Later: code-signing (optional but recommended for Windows SmartScreen)
 
 ### macOS / Linux (summary)

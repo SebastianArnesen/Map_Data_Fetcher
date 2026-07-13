@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TILE_URL = "https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png"
 _HTTP_HEADERS = {
     "Accept": "application/json,image/png,*/*",
-    "User-Agent": "GeonorgeDatasets",
+    "User-Agent": "MapDataFetcher",
 }
 _MAX_TILE_INFLIGHT = 8
 

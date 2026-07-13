@@ -44,16 +44,16 @@ else
   run_python scripts/prepare_icons.py
 fi
 
-run_python -m PyInstaller --noconfirm --clean GeonorgeDatasets.spec
+run_python -m PyInstaller --noconfirm --clean MapDataFetcher.spec
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  if [[ ! -d dist/GeonorgeDatasets.app ]]; then
-    echo "Expected dist/GeonorgeDatasets.app after PyInstaller build." >&2
+  if [[ ! -d dist/MapDataFetcher.app ]]; then
+    echo "Expected dist/MapDataFetcher.app after PyInstaller build." >&2
     exit 1
   fi
 
-  app="dist/GeonorgeDatasets.app"
-  main_bin="$app/Contents/MacOS/GeonorgeDatasets"
+  app="dist/MapDataFetcher.app"
+  main_bin="$app/Contents/MacOS/MapDataFetcher"
   echo "Main binary:"
   file "$main_bin"
   if [[ "$(file -b "$main_bin")" != *"${MACOS_TARGET_ARCH}"* ]]; then
@@ -68,22 +68,22 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   codesign --force --deep --sign - "$app"
 
   version="$(run_python -c 'from app import __version__; print(__version__)')"
-  dmg="dist/GeonorgeDatasets-${version}-macos-${MACOS_TARGET_ARCH}.dmg"
+  dmg="dist/MapDataFetcher-${version}-macos-${MACOS_TARGET_ARCH}.dmg"
   DMG_OUTPUT="$dmg" bash build_dmg.sh
   echo ""
-  echo "Built: dist/GeonorgeDatasets.app"
+  echo "Built: dist/MapDataFetcher.app"
   echo "Built: $dmg"
 else
-  if [[ ! -d dist/GeonorgeDatasets ]]; then
-    echo "Expected dist/GeonorgeDatasets after PyInstaller build." >&2
+  if [[ ! -d dist/MapDataFetcher ]]; then
+    echo "Expected dist/MapDataFetcher after PyInstaller build." >&2
     exit 1
   fi
   version="$(run_python -c 'from app import __version__; print(__version__)')"
   arch="$(uname -m)"
-  tarball="dist/GeonorgeDatasets-${version}-linux-${arch}.tar.gz"
+  tarball="dist/MapDataFetcher-${version}-linux-${arch}.tar.gz"
   rm -f "$tarball"
-  tar -czf "$tarball" -C dist GeonorgeDatasets
+  tar -czf "$tarball" -C dist MapDataFetcher
   echo ""
-  echo "Built: dist/GeonorgeDatasets/"
+  echo "Built: dist/MapDataFetcher/"
   echo "Built: $tarball"
 fi

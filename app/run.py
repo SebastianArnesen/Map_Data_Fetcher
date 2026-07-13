@@ -6,7 +6,7 @@ import sys
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QMessageBox
 
-from app import __version__
+from app import APP_DISPLAY_NAME, __version__
 from app.crash_handler import GeonorgeApplication, install_crash_handler
 from app.instance_lock import acquire_single_instance_lock, attach_single_instance_lock
 from app.logging_config import configure_logging
@@ -18,7 +18,7 @@ from app.windows_subprocess import install_windows_subprocess_patch
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="GeonorgeDatasets")
+    parser = argparse.ArgumentParser(prog="MapDataFetcher")
     parser.add_argument(
         "--no-tooltips",
         action="store_true",
@@ -45,13 +45,15 @@ def main(argv: list[str] | None = None) -> int:
     configure_ssl_bundle()
     install_crash_handler()
     app = GeonorgeApplication(argv)
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationVersion(__version__)
     if not args.no_tooltips:
         install_delayed_tooltips(app)
     lock = acquire_single_instance_lock()
     if lock is None:
         QMessageBox.information(
             None,
-            "Geonorge Datasets is already running",
+            f"{APP_DISPLAY_NAME} is already running",
             "The app is already open. Please use the existing window.",
         )
         return 0

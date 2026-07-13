@@ -1,8 +1,8 @@
-# Geonorge Datasets
+# Map Data Fetcher
 
 Desktop app for browsing and downloading map datasets from [Geonorge](https://www.geonorge.no/).
 
-Current version: **1.6.0** (see `app/__init__.py`).
+Current version: **1.6.1** (see `app/__init__.py`).
 
 ## License
 
@@ -65,7 +65,7 @@ pip install -r requirements-dev.txt
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
-Output: `dist\GeonorgeDatasets.exe`
+Output: `dist\MapDataFetcher.exe`
 
 Place the app icon at `assets\appIcon.ico` before building (used for the `.exe`, title bar, and taskbar).
 
@@ -76,7 +76,7 @@ pip install -r requirements-dev.txt
 powershell -ExecutionPolicy Bypass -File .\build_debug_exe.ps1
 ```
 
-Output: `dist\GeonorgeDatasetsDebug.exe`
+Output: `dist\MapDataFetcherDebug.exe`
 
 ## Install
 
@@ -84,8 +84,8 @@ Download the build for your OS from [GitHub Releases](https://github.com/Sebasti
 
 ### Windows
 
-- **Installer:** `GeonorgeDatasetsSetup.exe`
-- **Portable:** `GeonorgeDatasets.exe` (no install step)
+- **Installer:** `MapDataFetcherSetup.exe`
+- **Portable:** `MapDataFetcher.exe` (no install step)
 
 **Windows SmartScreen:** The installer is not code-signed (no paid certificate), so Windows may show *“Windows protected your PC”* with **Unknown publisher**. That is normal for unsigned open-source software. Click **Run anyway** to continue — the file comes from this repository’s GitHub Actions build.
 
@@ -95,12 +95,12 @@ Download the DMG that matches your Mac:
 
 | Mac type | File |
 | --- | --- |
-| Apple Silicon (M1/M2/M3/M4) | `GeonorgeDatasets-<version>-macos-arm64.dmg` |
-| Intel | `GeonorgeDatasets-<version>-macos-x86_64.dmg` |
+| Apple Silicon (M1/M2/M3/M4) | `MapDataFetcher-<version>-macos-arm64.dmg` |
+| Intel | `MapDataFetcher-<version>-macos-x86_64.dmg` |
 
 Not sure? **Apple menu → About This Mac** — “Chip” means Apple Silicon; “Processor” with Intel in the name means x86_64.
 
-Open the DMG and drag **Geonorge Datasets** to **Applications**. If you see *“not supported on this Mac”*, you downloaded the wrong architecture DMG.
+Open the DMG and drag **Map Data Fetcher** (`MapDataFetcher.app`) to **Applications**. If you see *“not supported on this Mac”*, you downloaded the wrong architecture DMG.
 
 **Requires macOS 12 Monterey or later.** Release builds use Qt 6.9 (PySide6 below 6.10) so they run on Monterey; if you see *“Qt requires macOS 13.0.0 or later”*, you have an older release built with a too-new Qt — install the latest DMG from [Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
 
@@ -111,7 +111,7 @@ The app is not Apple-notarized (no paid developer certificate). That is normal f
 3. If macOS still refuses after download, clear quarantine in Terminal:
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/GeonorgeDatasets.app
+xattr -dr com.apple.quarantine /Applications/MapDataFetcher.app
 ```
 
 **App bounces in the Dock and exits?** Check `~/Library/Application Support/GeonorgeDatasets/app.log` and `crash_reports/latest.txt`. That usually means a bad download/architecture mismatch or an older broken build — grab the latest `*-macos-x86_64.dmg` (Intel) or `*-macos-arm64.dmg` (Apple Silicon) from [Releases](https://github.com/SebastianArnesen/Map_Data_Fetcher/releases).
@@ -120,12 +120,12 @@ xattr -dr com.apple.quarantine /Applications/GeonorgeDatasets.app
 
 ### Linux
 
-- **Portable:** `GeonorgeDatasets-<version>-linux-<arch>.tar.gz`
-- Extract and run the binary inside the `GeonorgeDatasets/` folder:
+- **Portable:** `MapDataFetcher-<version>-linux-<arch>.tar.gz`
+- Extract and run the binary inside the `MapDataFetcher/` folder:
 
 ```bash
-tar -xzf GeonorgeDatasets-1.2.3-linux-x86_64.tar.gz
-./GeonorgeDatasets/GeonorgeDatasets
+tar -xzf MapDataFetcher-1.2.3-linux-x86_64.tar.gz
+./MapDataFetcher/MapDataFetcher
 ```
 
 Built on Ubuntu (GitHub `ubuntu-latest`); glibc must be new enough for that runner (typical on current Debian/Ubuntu/Fedora). Install Qt/X11 libs if the binary complains about missing `libxcb` or similar.
@@ -144,8 +144,8 @@ chmod +x build_exe.sh
 
 Output:
 
-- **macOS:** `dist/GeonorgeDatasets.app` and `dist/GeonorgeDatasets-<version>-macos-<arch>.dmg` (`<arch>` is `arm64` or `x86_64`)
-- **Linux:** `dist/GeonorgeDatasets/` and `dist/GeonorgeDatasets-<version>-linux-<arch>.tar.gz`
+- **macOS:** `dist/MapDataFetcher.app` and `dist/MapDataFetcher-<version>-macos-<arch>.dmg` (`<arch>` is `arm64` or `x86_64`)
+- **Linux:** `dist/MapDataFetcher/` and `dist/MapDataFetcher-<version>-linux-<arch>.tar.gz`
 
 Place the app icon at `assets/appIcon.ico` before building (used for window icons; macOS bundle icons are generated as `.icns` during the build).
 
@@ -166,9 +166,9 @@ The [Release workflow](.github/workflows/release.yml) runs when you **push a ver
 
 | OS | Files |
 | --- | --- |
-| Windows | `GeonorgeDatasets.exe`, `GeonorgeDatasetsSetup.exe` |
-| macOS | `GeonorgeDatasets-<version>-macos-arm64.dmg`, `GeonorgeDatasets-<version>-macos-x86_64.dmg` |
-| Linux | `GeonorgeDatasets-<version>-linux-<arch>.tar.gz` |
+| Windows | `MapDataFetcher.exe`, `MapDataFetcherSetup.exe` |
+| macOS | `MapDataFetcher-<version>-macos-arm64.dmg`, `MapDataFetcher-<version>-macos-x86_64.dmg` |
+| Linux | `MapDataFetcher-<version>-linux-<arch>.tar.gz` |
 
 The tag name **must** equal `v` + `__version__` (e.g. app `1.2.3` → tag `v1.2.3`).
 

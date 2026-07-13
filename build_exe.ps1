@@ -12,8 +12,8 @@ if (Test-Path ".\build") {
 python -m PyInstaller `
   --noconfirm `
   --clean `
-  "GeonorgeDatasets.spec"
+  "MapDataFetcher.spec"
 
 Write-Host ""
-Write-Host "Built: dist\GeonorgeDatasets.exe"
+Write-Host "Built: dist\MapDataFetcher.exe"
 

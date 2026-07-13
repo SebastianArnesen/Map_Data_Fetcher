@@ -48,7 +48,7 @@ class HttpResult:
 
 
 class HttpClient:
-    def __init__(self, timeout_s: float = 30.0, user_agent: str = "Geonorge Datasets/1.0"):
+    def __init__(self, timeout_s: float = 30.0, user_agent: str = "Map Data Fetcher/1.0"):
         self._timeout = timeout_s
         self._user_agent = user_agent
         self._local = threading.local()

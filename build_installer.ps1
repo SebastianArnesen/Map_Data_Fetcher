@@ -3,7 +3,7 @@
 # - Build exe first: powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 # - Install Inno Setup and add ISCC.exe to PATH
 #
-# Output: dist\GeonorgeDatasetsSetup.exe
+# Output: dist\MapDataFetcherSetup.exe
 
 $ErrorActionPreference = "Stop"
 
@@ -68,14 +68,14 @@ Common install locations:
 "@
 }
 
-if (-not (Test-Path ".\\dist\\GeonorgeDatasets.exe")) {
-  Write-Error "dist\\GeonorgeDatasets.exe not found. Build the exe first."
+if (-not (Test-Path ".\\dist\\MapDataFetcher.exe")) {
+  Write-Error "dist\\MapDataFetcher.exe not found. Build the exe first."
 }
 
-& $iscc "/DAppVersion=$version" ".\\installer\\GeonorgeDatasets.iss"
-if (-not (Test-Path ".\\dist\\GeonorgeDatasetsSetup.exe")) {
-  Write-Error "Inno Setup did not produce dist\\GeonorgeDatasetsSetup.exe"
+& $iscc "/DAppVersion=$version" ".\\installer\\MapDataFetcher.iss"
+if (-not (Test-Path ".\\dist\\MapDataFetcherSetup.exe")) {
+  Write-Error "Inno Setup did not produce dist\\MapDataFetcherSetup.exe"
 }
 Write-Host ""
-Write-Host "Built installer: dist\\GeonorgeDatasetsSetup.exe"
+Write-Host "Built installer: dist\\MapDataFetcherSetup.exe"
 

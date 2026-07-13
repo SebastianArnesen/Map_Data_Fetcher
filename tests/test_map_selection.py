@@ -101,6 +101,8 @@ def test_infer_source_epsg_from_layer_and_projection() -> None:
     assert infer_source_epsg(layer_id="ruter_entinelskyfritt2018uint16", projection_code="25833") is None
     assert infer_source_epsg(layer_id="dtm-sjo-25", projection_code=None) == 4326
     assert infer_source_epsg(layer_id="dtm-sjo-50", projection_code=None) == 25833
+    assert infer_source_epsg(layer_id="dybdedata_50m", projection_code=None) == 25833
+    assert infer_source_epsg(layer_id="dybdedata_50m", projection_code="4326") == 25833
 
 
 def test_normalize_grid_coordinates_passthrough() -> None:
@@ -149,6 +151,53 @@ def test_match_area_grid_codes_uses_area_name_for_label() -> None:
     maps = match_area_grid_codes(shapes, parsed, areas)
     assert maps.area_to_grid["7507-4"] == "7507-4"
     assert maps.cell_labels["7507-4"] == "Cell A"
+
+
+@pytest.mark.network
+def test_dybdedata_50m_grid_matches_all_areas() -> None:
+    from app.map_picker import build_grid_cell_shapes, match_area_grid_codes, parse_geojson_grid_cells
+    from geonorge.models import AreaOption
+
+    layer_id = "dybdedata_50m"
+    metadata_uuid = "bbd687d0-d34f-4d95-9e60-27e330e0f76e"
+    url = geojson_url_for_map_selection_layer(layer_id)
+    assert url is not None
+    assert url.endswith("/json/norge/dybdedata_50m.geojson")
+
+    text = requests.get(url, timeout=60).text
+    parsed = parse_geojson_grid_cells(text)
+    assert len(parsed) == 49
+    assert any(cell.code == "B0216" for cell in parsed)
+
+    source_epsg = infer_source_epsg(layer_id=layer_id, projection_code=None)
+    assert source_epsg == 25833
+    shapes_list = build_grid_cell_shapes(parsed, source_epsg=source_epsg)
+    shapes = {shape.code: shape for shape in shapes_list}
+    assert len(shapes) == 49
+
+    min_lon = min(s.bbox_lonlat[0] for s in shapes_list)
+    min_lat = min(s.bbox_lonlat[1] for s in shapes_list)
+    max_lon = max(s.bbox_lonlat[2] for s in shapes_list)
+    max_lat = max(s.bbox_lonlat[3] for s in shapes_list)
+    assert 0.0 <= min_lon <= max_lon <= 35.0
+    assert 55.0 <= min_lat <= max_lat <= 73.0
+
+    areas_raw = requests.get(
+        f"https://nedlasting.geonorge.no/api/codelists/area/{metadata_uuid}",
+        timeout=60,
+    ).json()
+    area_codes = [
+        str(a.get("code") or a.get("Code"))
+        for a in areas_raw
+        if str(a.get("type") or a.get("Type") or "").lower() == "celle"
+    ]
+    assert len(area_codes) == 49
+
+    areas = [AreaOption(type="celle", code=code, name=code) for code in area_codes]
+    maps = match_area_grid_codes(shapes, parsed, areas)
+    assert len(maps.area_to_grid) == 49
+    assert len(shapes) - len(maps.grid_to_area) == 0
+    assert maps.area_to_grid["B0216"] == "B0216"
 
 
 @pytest.mark.network

@@ -67,7 +67,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app import __version__
+from app import APP_DISPLAY_NAME, __version__
 from app.area_map_expand import (
     ExpandedAreaMapWindow,
     MapExpandButton,
@@ -794,7 +794,7 @@ def _merge_area_selection_with_visible_checks(
 class MainWindow(QMainWindow):
     def __init__(self, *, profile_ui: bool = False):
         super().__init__()
-        self.setWindowTitle("Geonorge Datasets")
+        self.setWindowTitle(f"{APP_DISPLAY_NAME} (v{__version__})")
         self.resize(1200, 800)
 
         self._http = HttpClient()

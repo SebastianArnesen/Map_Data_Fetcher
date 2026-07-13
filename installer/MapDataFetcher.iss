@@ -1,10 +1,10 @@
-; Inno Setup installer for GeonorgeDatasets.exe
+; Inno Setup installer for MapDataFetcher.exe
 ; Prereqs:
-; - Build the exe first (dist\GeonorgeDatasets.exe)
+; - Build the exe first (dist\MapDataFetcher.exe)
 ; - Install Inno Setup and ensure ISCC.exe is on PATH
 
-#define AppName "Geonorge Datasets"
-#define AppExeName "GeonorgeDatasets.exe"
+#define AppName "Map Data Fetcher"
+#define AppExeName "MapDataFetcher.exe"
 #define AppPublisher "Sebastian Arnesen"
 #define AppURL "https://github.com/SebastianArnesen/Map_Data_Fetcher"
 #define AppVersion "1.2.3"
@@ -21,7 +21,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=GeonorgeDatasetsSetup
+OutputBaseFilename=MapDataFetcherSetup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -45,4 +45,3 @@ Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desk
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
-

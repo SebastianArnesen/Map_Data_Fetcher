@@ -21,7 +21,6 @@ _WGS84_LAYERS = frozenset(
     {
         "dtm-sjo-5",
         "dtm-sjo-25",
-        "dybdedata_50m",
         "hovedserie_ny",
         "havnekart_ny",
         "kystkart_ny",
@@ -45,7 +44,8 @@ def infer_source_epsg(*, layer_id: str | None = None, projection_code: str | Non
         return None
     if lid in _WGS84_LAYERS:
         return 4326
-    if lid in ("dtm-sjo", "dtm-sjo-50"):
+    # dybdedata_50m GeoJSON uses UTM meters (not WGS84 like dtm-sjo-5/25).
+    if lid in ("dtm-sjo", "dtm-sjo-50", "dybdedata_50m"):
         return 25833
     if lid.startswith("dtm-dekning-utm"):
         return _GRID_GEOJSON_EPSG

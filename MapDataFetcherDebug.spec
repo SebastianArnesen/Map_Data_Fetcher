@@ -26,7 +26,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='GeonorgeDatasetsDebug',
+    name='MapDataFetcherDebug',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,4 +41,3 @@ exe = EXE(
     entitlements_file=None,
     icon=['assets\\appIcon.ico'],
 )
-
